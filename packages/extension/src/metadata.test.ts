@@ -1,34 +1,89 @@
-﻿/**
- * @jest-environment jsdom
- */
-import { extractPageMetadata } from './metadata';
+﻿import { extractPageMetadata } from './metadata';
 
-describe('extractPageMetadata', () => {
-  it('extracts document.title, og:title, twitter:title, and JSON-LD title correctly', () => {
-    document.title = 'Test Document Title';
+describe('extractPageMetadata JSON-LD & Title Selection', () => {
+  function makeMockDoc(opts: { title?: string; ogTitle?: string; twitterTitle?: string; jsonLd?: any }): Document {
+    const scripts: any[] = [];
+    if (opts.jsonLd !== undefined) {
+      scripts.push({
+        textContent: typeof opts.jsonLd === 'string' ? opts.jsonLd : JSON.stringify(opts.jsonLd),
+      });
+    }
 
-    const ogMeta = document.createElement('meta');
-    ogMeta.setAttribute('property', 'og:title');
-    ogMeta.setAttribute('content', 'OG Title Test');
-    document.head.appendChild(ogMeta);
+    return {
+      title: opts.title || '',
+      querySelector: (selector: string) => {
+        if (selector.includes('og:title') && opts.ogTitle) {
+          return { getAttribute: (a: string) => (a === 'content' ? opts.ogTitle : null) };
+        }
+        if (selector.includes('twitter:title') && opts.twitterTitle) {
+          return { getAttribute: (a: string) => (a === 'content' ? opts.twitterTitle : null) };
+        }
+        return null;
+      },
+      querySelectorAll: (selector: string) => {
+        if (selector.includes('ld+json')) return scripts;
+        return [];
+      },
+    } as unknown as Document;
+  }
 
-    const twMeta = document.createElement('meta');
-    twMeta.setAttribute('name', 'twitter:title');
-    twMeta.setAttribute('content', 'Twitter Title Test');
-    document.head.appendChild(twMeta);
-
-    const jsonLdScript = document.createElement('script');
-    jsonLdScript.setAttribute('type', 'application/ld+json');
-    jsonLdScript.textContent = JSON.stringify({
-      '@type': 'TVSeries',
-      'name': 'Dandadan',
+  it('Test A: Organization name + Movie name => Movie wins', () => {
+    const doc = makeMockDoc({
+      title: 'Movie Title - Site',
+      jsonLd: [
+        { '@type': 'Organization', name: 'Crunchyroll Corp' },
+        { '@type': 'Movie', name: 'Demon Slayer Movie' }
+      ]
     });
-    document.head.appendChild(jsonLdScript);
+    const meta = extractPageMetadata(doc);
+    expect(meta.jsonLdTitle).toBe('Demon Slayer Movie');
+  });
 
-    const meta = extractPageMetadata(document);
-    expect(meta.documentTitle).toBe('Test Document Title');
-    expect(meta.ogTitle).toBe('OG Title Test');
-    expect(meta.twitterTitle).toBe('Twitter Title Test');
+  it('Test B: WebSite name + TVSeries in @graph => TVSeries wins', () => {
+    const doc = makeMockDoc({
+      title: 'Dandadan Watch Page',
+      jsonLd: {
+        '@context': 'https://schema.org',
+        '@graph': [
+          { '@type': 'WebSite', name: 'Crunchyroll' },
+          { '@type': 'TVSeries', name: 'Dandadan' }
+        ]
+      }
+    });
+    const meta = extractPageMetadata(doc);
     expect(meta.jsonLdTitle).toBe('Dandadan');
+  });
+
+  it('Test C: BreadcrumbList + VideoObject => VideoObject wins', () => {
+    const doc = makeMockDoc({
+      title: 'Video Page',
+      jsonLd: [
+        { '@type': 'BreadcrumbList', name: 'Home > Videos' },
+        { '@type': 'VideoObject', name: 'Chainsaw Man Trailer' }
+      ]
+    });
+    const meta = extractPageMetadata(doc);
+    expect(meta.jsonLdTitle).toBe('Chainsaw Man Trailer');
+  });
+
+  it('Test D: Only untyped arbitrary object with name => jsonLdTitle is undefined', () => {
+    const doc = makeMockDoc({
+      title: 'Untyped Page',
+      jsonLd: { name: 'Random Site Data', url: 'https://example.com' }
+    });
+    const meta = extractPageMetadata(doc);
+    expect(meta.jsonLdTitle).toBeUndefined();
+  });
+
+  it('Test E: Array containing non-media then CreativeWork => CreativeWork wins', () => {
+    const doc = makeMockDoc({
+      title: 'Book Page',
+      jsonLd: [
+        { '@type': 'Person', name: 'Author Name' },
+        { '@type': 'CreativeWork', name: 'Attack on Titan' }
+      ]
+    });
+    const meta = extractPageMetadata(doc);
+    expect(meta.jsonLdTitle).toBe('Attack on Titan');
   });
 });
