@@ -3,6 +3,16 @@
 const SERVICE_URL = 'http://127.0.0.1:17337';
 let cachedSecret: string | null = null;
 let latestSequenceId = 0;
+let focusedWindowId: number | null = null;
+let isServiceOffline = false;
+
+export function getFocusedWindowId(): number | null {
+  return focusedWindowId;
+}
+
+export function setFocusedWindowId(windowId: number | null) {
+  focusedWindowId = windowId;
+}
 
 export async function getSecret(): Promise<string | null> {
   if (cachedSecret) return cachedSecret;
@@ -23,12 +33,11 @@ export async function getSecret(): Promise<string | null> {
       if (data.success && data.secret) {
         cachedSecret = data.secret;
         await new Promise<void>((resolve) => chrome.storage.local.set({ bridgeSecret: data.secret }, () => resolve()));
-        console.log('[StreamDockBridge Extension] Handshake success, secret provisioned.');
         return cachedSecret;
       }
     }
   } catch (e) {
-    console.error('[StreamDockBridge Extension] Handshake error:', e);
+    // Handshake failed
   }
 
   return null;
@@ -37,7 +46,15 @@ export async function getSecret(): Promise<string | null> {
 export async function syncActiveContext() {
   const currentSequence = ++latestSequenceId;
 
-  chrome.tabs.query({ active: true }, async (tabs) => {
+  // Query active tab for the focused window authority
+  const queryInfo: chrome.tabs.QueryInfo = { active: true };
+  if (focusedWindowId !== null && typeof chrome !== 'undefined' && chrome.windows && focusedWindowId !== chrome.windows.WINDOW_ID_NONE) {
+    queryInfo.windowId = focusedWindowId;
+  } else {
+    queryInfo.lastFocusedWindow = true;
+  }
+
+  chrome.tabs.query(queryInfo, async (tabs) => {
     if (!tabs || tabs.length === 0) return;
 
     let targetTab: chrome.tabs.Tab | null = null;
@@ -55,7 +72,14 @@ export async function syncActiveContext() {
     if (!targetTab || !targetTab.id || !targetTab.url) return;
     const tabId = targetTab.id;
     const tabUrl: string = targetTab.url;
-    const initialWindowId = targetTab.windowId;
+    const tabWindowId = targetTab.windowId;
+
+    // Check authority: If target tab belongs to a non-focused window, drop it
+    if (typeof chrome !== 'undefined' && chrome.windows && focusedWindowId !== null && focusedWindowId !== chrome.windows.WINDOW_ID_NONE) {
+      if (tabWindowId !== focusedWindowId) {
+        return;
+      }
+    }
 
     let meta: PageMetadata = { documentTitle: targetTab.title || '' };
 
@@ -75,8 +99,14 @@ export async function syncActiveContext() {
       }
     }
 
+    // RACE & FOCUS PROTECTION: Drop stale results if sequence ID changed or window focus changed
     if (currentSequence !== latestSequenceId) {
       return;
+    }
+    if (typeof chrome !== 'undefined' && chrome.windows && focusedWindowId !== null && focusedWindowId !== chrome.windows.WINDOW_ID_NONE) {
+      if (tabWindowId !== focusedWindowId) {
+        return;
+      }
     }
 
     let hostname = '';
@@ -95,7 +125,7 @@ export async function syncActiveContext() {
       twitterTitle: meta.twitterTitle,
       jsonLdTitle: meta.jsonLdTitle,
       tabId: tabId,
-      windowId: initialWindowId,
+      windowId: tabWindowId,
       timestamp: Date.now(),
     };
 
@@ -113,22 +143,86 @@ export async function syncActiveContext() {
         headers,
         body: JSON.stringify(payload),
       });
-      console.log(`[StreamDockBridge Extension] POST /context status: ${res.status}`);
+
+      if (res.ok) {
+        isServiceOffline = false;
+      } else {
+        isServiceOffline = true;
+      }
     } catch (e) {
-      console.error('[StreamDockBridge Extension] POST /context error:', e);
+      isServiceOffline = true;
+      // Schedule lightweight recovery check when service is offline
+      scheduleServiceRecovery();
     }
   });
 }
 
-if (typeof chrome !== 'undefined' && chrome.tabs) {
-  chrome.tabs.onActivated.addListener(() => syncActiveContext());
-  chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
-    if (tab.active && (changeInfo.status === 'complete' || changeInfo.title || changeInfo.url)) {
-      syncActiveContext();
+let recoveryTimeout: any = null;
+export function scheduleServiceRecovery() {
+  if (recoveryTimeout) return;
+  recoveryTimeout = setTimeout(async () => {
+    recoveryTimeout = null;
+    try {
+      const res = await fetch(`${SERVICE_URL}/health`);
+      if (res.ok) {
+        isServiceOffline = false;
+        syncActiveContext();
+      } else if (isServiceOffline) {
+        scheduleServiceRecovery();
+      }
+    } catch (e) {
+      if (isServiceOffline) {
+        scheduleServiceRecovery();
+      }
     }
-  });
-  chrome.tabs.onCreated.addListener(() => syncActiveContext());
-  chrome.windows.onFocusChanged.addListener(() => syncActiveContext());
-  chrome.runtime.onStartup.addListener(() => syncActiveContext());
-  chrome.runtime.onInstalled.addListener(() => syncActiveContext());
+  }, 3000);
 }
+
+export function initExtension() {
+  if (typeof chrome !== 'undefined' && chrome.windows) {
+    chrome.windows.getLastFocused({ populate: false }, (win) => {
+      if (win && win.id !== undefined && win.id !== chrome.windows.WINDOW_ID_NONE) {
+        focusedWindowId = win.id;
+      }
+      syncActiveContext();
+    });
+
+    chrome.windows.onFocusChanged.addListener((windowId) => {
+      if (windowId !== chrome.windows.WINDOW_ID_NONE) {
+        focusedWindowId = windowId;
+        syncActiveContext();
+      }
+    });
+  }
+
+  if (typeof chrome !== 'undefined' && chrome.tabs) {
+    chrome.tabs.onActivated.addListener((activeInfo) => {
+      if (focusedWindowId === null || activeInfo.windowId === focusedWindowId) {
+        syncActiveContext();
+      }
+    });
+
+    chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
+      if (tab.active && (focusedWindowId === null || tab.windowId === focusedWindowId)) {
+        if (changeInfo.status === 'complete' || changeInfo.title || changeInfo.url) {
+          syncActiveContext();
+        }
+      }
+    });
+
+    chrome.tabs.onCreated.addListener(() => syncActiveContext());
+    chrome.runtime.onStartup.addListener(() => syncActiveContext());
+    chrome.runtime.onInstalled.addListener(() => syncActiveContext());
+  }
+
+  if (typeof chrome !== 'undefined' && chrome.alarms) {
+    chrome.alarms.create('service_recovery_alarm', { periodInMinutes: 0.5 });
+    chrome.alarms.onAlarm.addListener((alarm) => {
+      if (alarm.name === 'service_recovery_alarm' && isServiceOffline) {
+        syncActiveContext();
+      }
+    });
+  }
+}
+
+initExtension();

@@ -1,19 +1,16 @@
 ﻿# install-service-startup.ps1
-$taskName = "StreamDockBridgeService"
-$serviceDistPath = Join-Path $PSScriptRoot "packages\service\dist\index.js"
-$nodePath = (Get-Command node).Source
+$startupDir = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\Start Menu\Programs\Startup')
+$targetCmd = Join-Path $startupDir "StreamDockBridgeService.cmd"
+$sourceCmd = Join-Path $PSScriptRoot "start-service.cmd"
 
-if (-not (Test-Path $serviceDistPath)) {
-    Write-Error "Service dist file not found at $serviceDistPath. Run 'yarn build' first."
+if (-not (Test-Path $sourceCmd)) {
+    Write-Error "source start-service.cmd not found at $sourceCmd"
     exit 1
 }
 
-$action = New-ScheduledTaskAction -Execute $nodePath -Argument "`"$serviceDistPath`"" -WorkingDirectory $PSScriptRoot
-$trigger = New-ScheduledTaskTrigger -AtLogOn
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0
+Copy-Item -Path $sourceCmd -Destination $targetCmd -Force
+Write-Host "Successfully installed Windows logon startup script to: $targetCmd"
 
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "StreamDockBridge Background Service" -Force | Out-Null
-
-Write-Host "Successfully installed scheduled task: $taskName"
-Start-ScheduledTask -TaskName $taskName
-Write-Host "Service task started."
+# Start service process for current session
+Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"$sourceCmd`"" -WindowStyle Hidden
+Write-Host "StreamDockBridge background service launched."

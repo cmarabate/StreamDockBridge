@@ -1,7 +1,7 @@
 {
     "Actions": {
         "0,1": {
-            "ActionID": "ab1f6d28-4024-439a-a595-5de02caedbfe",
+            "ActionID": "47541a7c-2d7d-4339-937e-d91908473a0a",
             "Controller": "Keypad",
             "Name": "AUDIO FIX",
             "Settings": {
@@ -22,7 +22,7 @@
             "UUID": "com.lizard.switchaudio.toggle"
         },
         "1,1": {
-            "ActionID": "5af20576-7c94-4543-b167-d3a11b2b4122",
+            "ActionID": "7eae3711-18bf-4745-a5a0-279a93cbb09d",
             "Controller": "Keypad",
             "Name": "RECORD",
             "Settings": {},
@@ -41,7 +41,7 @@
             "UUID": "com.hotspot.streamdock.obsstudio.record"
         },
         "2,1": {
-            "ActionID": "e3921c8a-63c0-407c-9f91-65284fa7bf21",
+            "ActionID": "99f7511a-35c1-444a-9b02-7a243af7eb49",
             "Controller": "Keypad",
             "Name": "IMDb",
             "Settings": {},
@@ -57,7 +57,7 @@
             "UUID": "com.cmarabate.streamdock.streamdockbridge.imdb"
         },
         "3,1": {
-            "ActionID": "dc530df5-615c-4e9c-a002-c25f105680d4",
+            "ActionID": "71394053-f83d-47a6-9161-e4b09122774c",
             "Controller": "Keypad",
             "Name": "CAST",
             "Settings": {},
@@ -73,7 +73,7 @@
             "UUID": "com.cmarabate.streamdock.streamdockbridge.cast"
         },
         "4,1": {
-            "ActionID": "eee6700e-39f0-4ff3-8799-bb11c0c271ec",
+            "ActionID": "4481faca-8655-4b9e-bcb7-77d1a3b4dcab",
             "Controller": "Keypad",
             "Name": "JUSTWATCH",
             "Settings": {},
@@ -89,7 +89,7 @@
             "UUID": "com.cmarabate.streamdock.streamdockbridge.justwatch"
         },
         "0,2": {
-            "ActionID": "cfb3d2dc-6c15-491f-a5e2-942bcca53d2d",
+            "ActionID": "438af019-6283-4406-a55c-1d27ee7210ff",
             "Controller": "Keypad",
             "Name": "REDDIT",
             "Settings": {},
@@ -105,8 +105,5 @@
             "UUID": "com.cmarabate.streamdock.streamdockbridge.reddit"
         }
     },
-    "DeviceModel": "20GBA9901",
-    "DeviceUUID": "VSDN4Pro",
-    "Name": "USEFUL v2",
-    "Version": "1.0"
+    "Name": "USEFUL v2"
 }
