@@ -36,18 +36,39 @@ export function clearCachedSecret() {
   }
 }
 
-export async function getSecret(): Promise<string | null> {
-  if (cachedSecret) return cachedSecret;
+export async function getSecret(forceRefresh = false): Promise<string | null> {
+  if (forceRefresh) {
+    clearCachedSecret();
+  } else if (cachedSecret) {
+    return cachedSecret;
+  }
 
   const storageData = await new Promise<{ bridgeSecret?: string }>((resolve) => {
-    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-      chrome.storage.local.get(['bridgeSecret'], (res) => resolve(res || {}));
+    let resolved = false;
+    const timer = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        resolve({});
+      }
+    }, 300);
+
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local && !forceRefresh) {
+      chrome.storage.local.get(['bridgeSecret'], (res) => {
+        const err = chrome.runtime.lastError;
+        if (err) { void err.message; }
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          resolve(res || {});
+        }
+      });
     } else {
+      clearTimeout(timer);
       resolve({});
     }
   });
 
-  if (storageData.bridgeSecret) {
+  if (storageData.bridgeSecret && !forceRefresh) {
     cachedSecret = storageData.bridgeSecret;
     return cachedSecret;
   }
@@ -59,12 +80,12 @@ export async function getSecret(): Promise<string | null> {
       if (data.success && data.secret) {
         cachedSecret = data.secret;
         if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-          await new Promise<void>((resolve) => chrome.storage.local.set({ bridgeSecret: data.secret }, () => resolve()));
+          chrome.storage.local.set({ bridgeSecret: data.secret });
         }
         return cachedSecret;
       }
     }
-  } catch (e) {
+  } catch (e: any) {
     // Handshake error ignored
   }
 
@@ -88,107 +109,100 @@ export async function recoveryTick() {
   }
 }
 
-export async function postContextPayload(payload: any) {
-  const secret = await getSecret();
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-  if (secret) {
-    headers['X-Bridge-Secret'] = secret;
-  }
-
-  try {
-    const res = await fetch(`${SERVICE_URL}/context`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(payload),
-    });
-
-    if (res.ok) {
-      isServiceOffline = false;
-    } else {
-      if (res.status === 401) {
-        clearCachedSecret();
-      }
-      isServiceOffline = true;
-    }
-  } catch (e) {
-    isServiceOffline = true;
-  }
-}
-
-export async function syncActiveContext() {
+export async function syncActiveContext(retryCount = 0) {
   const currentSequence = ++latestSequenceId;
 
-  chrome.tabs.query({ active: true }, async (tabs) => {
-    let activeTabs = tabs;
-    if (!activeTabs || activeTabs.length === 0) {
-      activeTabs = await new Promise<chrome.tabs.Tab[]>((resolve) => {
-        chrome.tabs.query({}, (res) => resolve(res || []));
-      });
-    }
-    if (!activeTabs || activeTabs.length === 0) return;
+  if (typeof chrome === 'undefined' || !chrome.windows || !chrome.tabs) {
+    return;
+  }
 
-    let targetTab: chrome.tabs.Tab | null = null;
-    for (const tab of activeTabs) {
-      const url = tab.url || tab.pendingUrl || '';
-      if (url && (url.startsWith('http://') || url.startsWith('https://'))) {
-        targetTab = tab;
-        break;
+  chrome.windows.getAll({ populate: true }, async (windows) => {
+    const err = chrome.runtime.lastError;
+    if (err) { void err.message; }
+
+    if (!windows || windows.length === 0) {
+      if (retryCount < 3) {
+        setTimeout(() => syncActiveContext(retryCount + 1), 200);
       }
-    }
-
-    if (!targetTab) {
-      targetTab = activeTabs[0];
-    }
-
-    if (!targetTab || !targetTab.id) return;
-    const tabId = targetTab.id;
-    const tabUrl: string = targetTab.url || targetTab.pendingUrl || '';
-    const tabWindowId = targetTab.windowId;
-
-    if (tabUrl.startsWith('http://') || tabUrl.startsWith('https://')) {
-      focusedWindowId = tabWindowId;
-    }
-
-    if (!isFocusedWindow(tabWindowId)) {
       return;
     }
 
-    let meta: PageMetadata = { documentTitle: targetTab.title || '' };
+    let targetWin: chrome.windows.Window | undefined;
+    if (focusedWindowId !== null && focusedWindowId !== chrome.windows.WINDOW_ID_NONE) {
+      targetWin = windows.find((w) => w.id === focusedWindowId);
+    }
+    if (!targetWin) {
+      targetWin = windows.find((w) => w.focused) || windows[0];
+    }
 
-    if (tabUrl.startsWith('http://') || tabUrl.startsWith('https://')) {
-      try {
-        meta = await new Promise<PageMetadata>((resolve) => {
-          let resolved = false;
-          const timer = setTimeout(() => {
-            if (!resolved) {
-              resolved = true;
-              resolve({ documentTitle: targetTab?.title || '' });
-            }
-          }, 500);
+    if (!targetWin || !targetWin.tabs || targetWin.tabs.length === 0) {
+      if (retryCount < 3) {
+        setTimeout(() => syncActiveContext(retryCount + 1), 200);
+      }
+      return;
+    }
 
+    const targetTab = targetWin.tabs.find((t) => t.active) || targetWin.tabs[0];
+    if (!targetTab || !targetTab.id) return;
+    const tabId = targetTab.id;
+    const tabUrl: string = targetTab.url || targetTab.pendingUrl || '';
+    const tabWindowId = targetWin.id || targetTab.windowId;
+
+    if (!tabUrl) {
+      if (retryCount < 3) {
+        setTimeout(() => syncActiveContext(retryCount + 1), 200);
+      }
+      return;
+    }
+
+    let meta: PageMetadata = { url: tabUrl, documentTitle: targetTab.title || '' };
+
+    try {
+      meta = await new Promise<PageMetadata>((resolve) => {
+        let resolved = false;
+        const timer = setTimeout(() => {
+          if (!resolved) {
+            resolved = true;
+            resolve({ url: tabUrl, documentTitle: targetTab?.title || '' });
+          }
+        }, 150);
+
+        try {
           chrome.tabs.sendMessage(tabId, { action: 'GET_METADATA' }, (response) => {
+            const sendErr = chrome.runtime.lastError;
+            if (sendErr) { void sendErr.message; }
             if (!resolved) {
               resolved = true;
               clearTimeout(timer);
-              if (chrome.runtime?.lastError || !response) {
-                resolve({ documentTitle: targetTab?.title || '' });
+              if (sendErr || !response) {
+                resolve({ url: tabUrl, documentTitle: targetTab?.title || '' });
               } else {
                 resolve(response);
               }
             }
           });
-        });
-      } catch (e) {
-        meta = { documentTitle: targetTab.title || '' };
-      }
+        } catch (e) {
+          if (!resolved) {
+            resolved = true;
+            clearTimeout(timer);
+            resolve({ url: tabUrl, documentTitle: targetTab?.title || '' });
+          }
+        }
+      });
+    } catch (e) {
+      // Message error fallback
     }
 
-    if (currentSequence < latestSequenceId) {
+    const docTitle = meta.documentTitle || targetTab.title || tabUrl;
+    const hasRichMetadata = meta.ogTitle || meta.twitterTitle || meta.jsonLdTitle;
+    const hasValidDocTitle = docTitle && !docTitle.startsWith('http://') && !docTitle.startsWith('https://');
+
+    if (!hasRichMetadata && !hasValidDocTitle && retryCount < 3) {
+      setTimeout(() => syncActiveContext(retryCount + 1), 300);
       return;
     }
-    if (!isFocusedWindow(tabWindowId)) {
+
+    if (currentSequence !== latestSequenceId) {
       return;
     }
 
@@ -204,8 +218,8 @@ export async function syncActiveContext() {
     const payload = {
       url: tabUrl,
       hostname,
-      rawTitle: targetTab.title || '',
-      documentTitle: meta.documentTitle,
+      rawTitle: targetTab.title || tabUrl,
+      documentTitle: docTitle,
       ogTitle: meta.ogTitle,
       twitterTitle: meta.twitterTitle,
       jsonLdTitle: meta.jsonLdTitle,
@@ -214,20 +228,84 @@ export async function syncActiveContext() {
       timestamp: Date.now(),
     };
 
-    await postContextPayload(payload);
+    let secret = await getSecret();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (secret) {
+      headers['X-Bridge-Secret'] = secret;
+    }
+
+    try {
+      let res = await fetch(`${SERVICE_URL}/context`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+      });
+
+      if (res.status === 401) {
+        secret = await getSecret(true);
+        if (secret) {
+          headers['X-Bridge-Secret'] = secret;
+          res = await fetch(`${SERVICE_URL}/context`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload),
+          });
+        }
+      }
+
+      if (res.ok) {
+        isServiceOffline = false;
+      } else {
+        isServiceOffline = true;
+      }
+    } catch (e: any) {
+      isServiceOffline = true;
+    }
   });
 }
 
 export function initExtension() {
-  if (typeof chrome !== 'undefined' && chrome.windows) {
-    chrome.windows.getLastFocused({ populate: false }, (win) => {
-      if (win && win.id !== undefined && win.id !== chrome.windows.WINDOW_ID_NONE) {
-        focusedWindowId = win.id;
-      }
+  try {
+    if (typeof chrome !== 'undefined' && chrome.windows) {
+      chrome.windows.getLastFocused({ populate: false }, (win) => {
+        const err = chrome.runtime.lastError;
+        if (err) { void err.message; }
+        if (win && win.id !== undefined && win.id !== chrome.windows.WINDOW_ID_NONE) {
+          focusedWindowId = win.id;
+        }
+        syncActiveContext();
+      });
+    } else {
       syncActiveContext();
-    });
+    }
+  } catch (e) {
+    syncActiveContext();
+  }
+}
 
-    chrome.windows.onFocusChanged.addListener((windowId) => {
+// Global scope exports on globalThis & self
+try {
+  (globalThis as any)['syncActiveContext'] = syncActiveContext;
+  (globalThis as any)['initExtension'] = initExtension;
+  if (typeof self !== 'undefined') {
+    (self as any)['syncActiveContext'] = syncActiveContext;
+    (self as any)['initExtension'] = initExtension;
+  }
+} catch (e) {
+  // Global scope may be locked down in some environments; safe to ignore.
+}
+
+// Synchronous top-level MV3 event listener registrations
+if (typeof chrome !== 'undefined') {
+  if (chrome.runtime) {
+    chrome.runtime.onStartup?.addListener(() => syncActiveContext());
+    chrome.runtime.onInstalled?.addListener(() => syncActiveContext());
+  }
+
+  if (chrome.windows) {
+    chrome.windows.onFocusChanged?.addListener((windowId) => {
       if (windowId !== chrome.windows.WINDOW_ID_NONE) {
         focusedWindowId = windowId;
         syncActiveContext();
@@ -235,46 +313,31 @@ export function initExtension() {
     });
   }
 
-  if (typeof chrome !== 'undefined' && chrome.tabs) {
-    chrome.tabs.onActivated.addListener((activeInfo) => {
-      if (isFocusedWindow(activeInfo.windowId)) {
+  if (chrome.tabs) {
+    chrome.tabs.onActivated?.addListener((activeInfo) => {
+      if (focusedWindowId === null || activeInfo.windowId === focusedWindowId) {
         syncActiveContext();
       }
     });
 
-    chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
-      const u = tab.url || tab.pendingUrl || '';
-      if (tab.active || u.startsWith('http://') || u.startsWith('https://')) {
+    chrome.tabs.onUpdated?.addListener((_tabId, changeInfo, tab) => {
+      if (tab.active && isFocusedWindow(tab.windowId)) {
         if (changeInfo.status === 'complete' || changeInfo.title || changeInfo.url) {
           syncActiveContext();
         }
       }
     });
 
-    chrome.tabs.onCreated.addListener(() => syncActiveContext());
-    chrome.runtime.onStartup.addListener(() => syncActiveContext());
-    chrome.runtime.onInstalled.addListener(() => syncActiveContext());
-
-    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-      if (message && message.action === 'PAGE_CONTEXT_UPDATE' && message.payload) {
-        const payload = message.payload;
-        if (sender && sender.tab) {
-          payload.tabId = sender.tab.id;
-          payload.windowId = sender.tab.windowId;
-          if (sender.tab.windowId) {
-            focusedWindowId = sender.tab.windowId;
-          }
-        }
-        postContextPayload(payload);
-        if (sendResponse) sendResponse({ success: true });
+    chrome.tabs.onCreated?.addListener((tab) => {
+      if (isFocusedWindow(tab.windowId)) {
+        syncActiveContext();
       }
-      return true;
     });
   }
 
-  if (typeof chrome !== 'undefined' && chrome.alarms) {
+  if (chrome.alarms) {
     chrome.alarms.create('service_recovery_alarm', { periodInMinutes: 0.5 });
-    chrome.alarms.onAlarm.addListener((alarm) => {
+    chrome.alarms.onAlarm?.addListener((alarm) => {
       if (alarm.name === 'service_recovery_alarm') {
         recoveryTick();
       }
@@ -282,4 +345,5 @@ export function initExtension() {
   }
 }
 
+// Immediate synchronous top-level execution
 initExtension();

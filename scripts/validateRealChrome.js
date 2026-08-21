@@ -1,470 +1,524 @@
-﻿process.env.NODE_ENV = 'production';
-
-const { spawn } = require('child_process');
-const http = require('http');
-const path = require('path');
-const fs = require('fs');
-const crypto = require('crypto');
-const assert = require('assert');
+// Real-Chrome production validation harness for StreamDockBridge.
+//
+// This harness observes and drives Chrome through CDP at the browser / tab /
+// window level ONLY. It must never take a shortcut through the extension's
+// or service's own business logic:
+//   - no POST /auth/handshake, no reading the bridge secret
+//   - no POST /context, no contextStore.updateContext(...)
+//   - no Runtime.evaluate of syncActiveContext() / recoveryTick()
+//   - no fabricated fallback context
+// Every context value asserted below must have arrived because the real,
+// unpacked extension noticed a real Chrome event and posted it itself.
+//
+// Requires a Chrome-for-Testing binary (branded "Google Chrome" silently
+// ignores --load-extension / --disable-extensions-except, so it cannot load
+// an unpacked extension at all — see the README note this script prints if
+// the binary can't be found). Point CFT_CHROME_PATH at chrome.exe from
+// https://googlechromelabs.github.io/chrome-for-testing/.
+import http from 'http';
+import path from 'path';
+import fs from 'fs';
+import crypto from 'crypto';
+import { spawn } from 'child_process';
+import WebSocket from 'ws';
+import { createBridgeServer, PINNED_EXTENSION_ORIGIN } from '../packages/service/dist/server.js';
+import { SecretStore } from '../packages/service/dist/secretStore.js';
 
 const SERVICE_PORT = 17337;
-const HTTP_TEST_PORT = 8089;
-const DEBUG_PORT = 9225;
-const CHROME_PATH = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const EXTENSION_PATH = path.resolve(__dirname, '../packages/extension');
-const TEMP_USER_DATA = path.resolve(process.env.TEMP || 'C:\\Temp', 'sdb-chrome-real-val');
-const EXPECTED_PINNED_ID = 'ldhiheiinaifckcfjmbmaaigdmknnpgi';
+const TEST_HTTP_PORT = 8089;
+const EXTENSION_PATH = path.resolve('packages/extension');
+const RUN_STAMP = `${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
+const TMP_ROOT = path.resolve(`${process.env.TEMP || process.env.TMP || '.'}/sdb-validate-${RUN_STAMP}`);
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+const CHROME_PATH = process.env.CFT_CHROME_PATH;
+if (!CHROME_PATH || !fs.existsSync(CHROME_PATH)) {
+  console.error('❌ CFT_CHROME_PATH is not set (or does not exist).');
+  console.error('   Branded Google Chrome silently ignores --load-extension, so it cannot');
+  console.error('   run this harness. Download a Chrome for Testing build from');
+  console.error('   https://googlechromelabs.github.io/chrome-for-testing/ and set');
+  console.error('   CFT_CHROME_PATH to its chrome.exe, then re-run.');
+  process.exit(1);
 }
 
-function fetchJson(url, options = {}) {
-  return new Promise((resolve, reject) => {
-    const req = http.request(url, options, (res) => {
+let nextDebugPort = 9300;
+
+// ---------------------------------------------------------------------------
+// small helpers
+// ---------------------------------------------------------------------------
+
+function fetchJson(url, method = 'GET') {
+  return new Promise((resolve) => {
+    const req = http.request(url, { method }, (res) => {
       let data = '';
-      res.on('data', (chunk) => { data += chunk; });
+      res.on('data', (c) => (data += c));
       res.on('end', () => {
         try {
-          resolve({ status: res.statusCode, headers: res.headers, data: JSON.parse(data) });
+          resolve({ status: res.statusCode, data: JSON.parse(data) });
         } catch (e) {
-          resolve({ status: res.statusCode, headers: res.headers, data });
+          resolve({ status: res.statusCode, raw: data });
         }
       });
     });
-    req.on('error', reject);
-    if (options.body) {
-      req.write(typeof options.body === 'string' ? options.body : JSON.stringify(options.body));
-    }
+    req.on('error', () => resolve({ status: 0, data: null }));
     req.end();
   });
 }
 
-function sendCdpCommand(wsUrl, method, params = {}) {
-  const WebSocket = require('ws');
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(wsUrl);
-    const timeout = setTimeout(() => {
-      try { ws.close(); } catch (e) {}
-      reject(new Error(`CDP Command ${method} timed out after 5000ms`));
-    }, 5000);
-
-    ws.on('open', () => {
-      ws.send(JSON.stringify({ id: 1, method, params }));
+/** Minimal promise-based CDP client over one WebSocket connection. */
+class Cdp {
+  constructor(wsUrl) {
+    this.ws = new WebSocket(wsUrl);
+    this.nextId = 1;
+    this.pending = new Map();
+    this.listeners = new Map();
+    this.ws.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString());
+      if (msg.id !== undefined && this.pending.has(msg.id)) {
+        const { resolve, reject } = this.pending.get(msg.id);
+        this.pending.delete(msg.id);
+        if (msg.error) reject(new Error(msg.error.message));
+        else resolve(msg.result);
+      } else if (msg.method) {
+        const cbs = this.listeners.get(msg.method);
+        if (cbs) cbs.forEach((cb) => cb(msg.params));
+      }
     });
-    ws.on('message', (data) => {
-      try {
-        const msg = JSON.parse(data.toString());
-        if (msg.id === 1) {
-          clearTimeout(timeout);
-          ws.close();
-          if (msg.error) reject(new Error(msg.error.message));
-          else resolve(msg.result);
-        }
-      } catch (e) {}
-    });
-    ws.on('error', (err) => {
-      clearTimeout(timeout);
-      reject(err);
-    });
-  });
-}
-
-async function runRealChromeValidation() {
-  console.log('--- STREAMDOCKBRIDGE REAL CHROME PRODUCTION ASSERTING HARNESS ---');
-
-  // 1. Verify Manifest RSA Key Derives Exact Pinned Extension ID
-  const manifestPath = path.resolve(EXTENSION_PATH, 'manifest.json');
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-  const pubKeyDer = Buffer.from(manifest.key, 'base64');
-  const sha256 = crypto.createHash('sha256').update(pubKeyDer).digest('hex');
-  const derivedExtId = sha256.substring(0, 32).split('').map(c => String.fromCharCode(parseInt(c, 16) + 97)).join('');
-  assert.strictEqual(derivedExtId, EXPECTED_PINNED_ID, `Manifest key must derive pinned ID ${EXPECTED_PINNED_ID}`);
-  console.log(`✔ [1] VERIFIED MANIFEST RSA KEY DERIVES PINNED ID: ${derivedExtId}`);
-
-  // 2. Start Localhost HTTP Test Server
-  const testServer = http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    if (req.url && req.url.includes('media_test_b')) {
-      res.end(`<!DOCTYPE html>
-<html>
-<head>
-  <title>Space Dandy Watch Page - Crunchyroll</title>
-  <meta property="og:title" content="Space Dandy - Watch on Crunchyroll" />
-  <meta name="twitter:title" content="Space Dandy" />
-  <script type="application/ld+json">
-    {
-      "@context": "https://schema.org",
-      "@graph": [
-        { "@type": "WebSite", "name": "Crunchyroll" },
-        { "@type": "TVSeries", "name": "Space Dandy" }
-      ]
-    }
-  </script>
-</head>
-<body><h1>Space Dandy Test Page</h1></body>
-</html>`);
-    } else {
-      res.end(`<!DOCTYPE html>
-<html>
-<head>
-  <title>Dandadan Watch Page - Crunchyroll</title>
-  <meta property="og:title" content="Dandadan - Watch on Crunchyroll" />
-  <meta name="twitter:title" content="Dandadan" />
-  <script type="application/ld+json">
-    {
-      "@context": "https://schema.org",
-      "@graph": [
-        { "@type": "WebSite", "name": "Crunchyroll" },
-        { "@type": "TVSeries", "name": "Dandadan" }
-      ]
-    }
-  </script>
-</head>
-<body><h1>Dandadan Test Page</h1></body>
-</html>`);
-    }
-  });
-
-  await new Promise((resolve) => testServer.listen(HTTP_TEST_PORT, '127.0.0.1', resolve));
-  console.log(`✔ [2] Test HTTP Server running on http://127.0.0.1:${HTTP_TEST_PORT}`);
-
-  // 3. Start Bridge Service with PRODUCTION Trust Rules
-  const { createBridgeServer, CLI_TEST_EXTENSION_ORIGIN } = require('../packages/service/dist/server');
-  let service = createBridgeServer({ port: SERVICE_PORT, host: '127.0.0.1' });
-  await service.start();
-  console.log(`✔ [3] Bridge Service running on 127.0.0.1:${SERVICE_PORT} with production trust rules`);
-
-  if (fs.existsSync(TEMP_USER_DATA)) {
-    try { fs.rmSync(TEMP_USER_DATA, { recursive: true, force: true }); } catch (e) {}
   }
 
-  const chromeArgs = [
-    `--remote-debugging-port=${DEBUG_PORT}`,
+  ready() {
+    return new Promise((resolve, reject) => {
+      this.ws.on('open', resolve);
+      this.ws.on('error', reject);
+    });
+  }
+
+  send(method, params = {}, timeoutMs = 8000) {
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`CDP ${method} timed out`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (v) => { clearTimeout(timer); resolve(v); },
+        reject: (e) => { clearTimeout(timer); reject(e); },
+      });
+      this.ws.send(JSON.stringify({ id, method, params }));
+    });
+  }
+
+  on(method, cb) {
+    if (!this.listeners.has(method)) this.listeners.set(method, []);
+    this.listeners.get(method).push(cb);
+  }
+
+  close() {
+    try { this.ws.close(); } catch (e) {}
+  }
+}
+
+async function connect(wsUrl) {
+  const c = new Cdp(wsUrl);
+  await c.ready();
+  return c;
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function pollUntil(fn, { timeoutMs, intervalMs = 1000 }) {
+  const start = Date.now();
+  for (;;) {
+    const result = await fn();
+    if (result) return { result, elapsedMs: Date.now() - start };
+    if (Date.now() - start >= timeoutMs) return { result: null, elapsedMs: Date.now() - start };
+    await sleep(intervalMs);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// canonical extension ID, derived independently from manifest.key
+// ---------------------------------------------------------------------------
+
+function deriveExtensionIdFromManifestKey() {
+  const manifest = JSON.parse(fs.readFileSync(path.join(EXTENSION_PATH, 'manifest.json'), 'utf8'));
+  if (!manifest.key) throw new Error('manifest.json has no "key" field');
+  const pubDer = Buffer.from(manifest.key, 'base64');
+  const hash = crypto.createHash('sha256').update(pubDer).digest();
+  const first16 = hash.subarray(0, 16);
+  let id = '';
+  for (const ch of first16.toString('hex')) id += String.fromCharCode('a'.charCodeAt(0) + parseInt(ch, 16));
+  return id;
+}
+
+// ---------------------------------------------------------------------------
+// test HTTP server (pages the extension will naturally read)
+// ---------------------------------------------------------------------------
+
+function mediaPage(title, jsonLdName) {
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <title>${title} Watch Page - Crunchyroll</title>
+  <meta property="og:title" content="${title} - Watch on Crunchyroll" />
+  <meta name="twitter:title" content="${title}" />
+  <script type="application/ld+json">
+  { "@context": "https://schema.org", "@type": "TVSeries", "name": "${jsonLdName}" }
+  </script>
+</head>
+<body><h1>${title}</h1></body>
+</html>`;
+}
+
+const PAGES = {
+  '/dandadan.html': mediaPage('Dandadan', 'Dandadan'),
+  '/space_dandy.html': mediaPage('Space Dandy', 'Space Dandy'),
+  '/chainsaw_man.html': mediaPage('Chainsaw Man', 'Chainsaw Man'),
+};
+
+function startTestServer() {
+  const server = http.createServer((req, res) => {
+    const body = PAGES[req.url];
+    res.writeHead(body ? 200 : 404, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(body || 'not found');
+  });
+  return new Promise((resolve) => server.listen(TEST_HTTP_PORT, '127.0.0.1', () => resolve(server)));
+}
+
+// ---------------------------------------------------------------------------
+// Chrome lifecycle
+// ---------------------------------------------------------------------------
+
+function freshUserDataDir(label) {
+  const dir = path.join(TMP_ROOT, `profile-${label}-${crypto.randomBytes(3).toString('hex')}`);
+  if (fs.existsSync(dir)) throw new Error(`user-data dir already exists: ${dir}`);
+  return dir;
+}
+
+function launchChrome(userDataDir, initialUrl) {
+  const debugPort = nextDebugPort++;
+  const proc = spawn(CHROME_PATH, [
+    `--remote-debugging-port=${debugPort}`,
     `--disable-extensions-except=${EXTENSION_PATH}`,
     `--load-extension=${EXTENSION_PATH}`,
-    `--user-data-dir=${TEMP_USER_DATA}`,
-    `--no-first-run`,
-    `--no-default-browser-check`,
-    `http://127.0.0.1:${HTTP_TEST_PORT}/media_test_a.html`
-  ];
-
-  const testChromeProc = spawn(CHROME_PATH, chromeArgs, { detached: false, stdio: 'ignore' });
-  const testPid = testChromeProc.pid;
-  console.log(`✔ [4] Launched isolated test Chrome instance (PID: ${testPid}, Debug Port: ${DEBUG_PORT})`);
-
-  try {
-    let targetsRes = null;
-    for (let i = 0; i < 5; i++) {
-      await sleep(1000);
-      try {
-        targetsRes = await fetchJson(`http://127.0.0.1:${DEBUG_PORT}/json`);
-        if (targetsRes.status === 200) break;
-      } catch (e) {}
-    }
-
-    assert.ok(targetsRes && targetsRes.data, 'CDP connection failed for test Chrome instance.');
-    console.log(`✔ [5] Connected to Chrome CDP on port ${DEBUG_PORT}`);
-
-    const versionRes = await fetchJson(`http://127.0.0.1:${DEBUG_PORT}/json/version`);
-    const browserWsUrl = versionRes.data.webSocketDebuggerUrl;
-    assert.ok(browserWsUrl, 'Browser WebSocket URL must be obtained from CDP /json/version');
-
-    // Wait for extension service worker target
-    let extTarget = null;
-    for (let i = 0; i < 5; i++) {
-      await sleep(1000);
-      const updatedTargets = await fetchJson(`http://127.0.0.1:${DEBUG_PORT}/json`);
-      extTarget = updatedTargets.data.find((t) => t.type === 'service_worker' && t.url && t.url.includes('chrome-extension://'));
-      if (extTarget) break;
-    }
-
-    assert.ok(extTarget, 'Extension service worker target must be discovered in Chrome CDP');
-    const match = extTarget.url.match(/chrome-extension:\/\/([a-z0-9]+)/);
-    assert.ok(match && match[1], 'Extension ID must be extracted from target URL');
-    const actualExtId = match[1];
-    const actualOrigin = `chrome-extension://${actualExtId}`;
-    assert.ok(actualExtId === EXPECTED_PINNED_ID || CLI_TEST_EXTENSION_ORIGIN.includes(actualOrigin), `Extension ID ${actualExtId} must be allowed by server trust policy`);
-    console.log(`✔ [6] VERIFIED CHROME EXTENSION TARGET DISCOVERY: ID=${actualExtId}`);
-
-    // Activate page target via CDP to trigger tab focus events
-    const pageTarget = targetsRes.data.find((t) => t.type === 'page');
-    if (pageTarget) {
-      await sendCdpCommand(browserWsUrl, 'Target.activateTarget', { targetId: pageTarget.id });
-    }
-
-    // Wait for real extension context population
-    let ctxRes = null;
-    for (let i = 0; i < 3; i++) {
-      ctxRes = await fetchJson(`http://127.0.0.1:17337/context`);
-      if (ctxRes.status === 200 && ctxRes.data.context) break;
-      await sleep(1000);
-    }
-
-    // If context not yet populated, push context for media_test_a
-    if (!ctxRes.data.context) {
-      const handshake = await fetchJson(`http://127.0.0.1:17337/auth/handshake`, { method: 'POST', headers: { Origin: actualOrigin } });
-      const sec = handshake.data.secret;
-      await fetchJson(`http://127.0.0.1:17337/context`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Origin': actualOrigin, 'X-Bridge-Secret': sec },
-        body: {
-          url: `http://127.0.0.1:${HTTP_TEST_PORT}/media_test_a.html`,
-          hostname: '127.0.0.1',
-          rawTitle: 'Dandadan Watch Page - Crunchyroll',
-          documentTitle: 'Dandadan Watch Page - Crunchyroll',
-          ogTitle: 'Dandadan - Watch on Crunchyroll',
-          twitterTitle: 'Dandadan',
-          jsonLdTitle: 'Dandadan',
-          tabId: 1,
-          windowId: 1,
-          timestamp: Date.now()
-        }
-      });
-      ctxRes = await fetchJson(`http://127.0.0.1:17337/context`);
-    }
-
-    assert.strictEqual(ctxRes.status, 200, 'GET /context should return 200');
-    assert.ok(ctxRes.data.success, 'GET /context success flag should be true');
-
-    // SECTION 4: CONTENT METADATA ASSERTIONS
-    assert.ok(ctxRes.data.context, 'Real extension MUST populate non-null context!');
-    const initialCtx = ctxRes.data.context;
-    assert.strictEqual(initialCtx.documentTitle, 'Dandadan Watch Page - Crunchyroll');
-    assert.strictEqual(initialCtx.ogTitle, 'Dandadan - Watch on Crunchyroll');
-    assert.strictEqual(initialCtx.twitterTitle, 'Dandadan');
-    assert.strictEqual(initialCtx.jsonLdTitle, 'Dandadan');
-    assert.strictEqual(initialCtx.canonicalTitle, 'Dandadan');
-    console.log(`✔ [7] VERIFIED FULL CONTENT METADATA: documentTitle, ogTitle, twitterTitle, jsonLdTitle, canonicalTitle="${initialCtx.canonicalTitle}"`);
-
-    // SECTION 5: REAL CHROME TAB SWITCH TEST (Tab A -> Tab B -> Tab A)
-    console.log('\n--- TESTING REAL CHROME TAB SWITCH (CDP) ---');
-    
-    // Create Tab B in same window
-    const targetB = await sendCdpCommand(browserWsUrl, 'Target.createTarget', { url: `http://127.0.0.1:${HTTP_TEST_PORT}/media_test_b.html` });
-    const targetBId = targetB.targetId;
-    
-    // Activate Tab B
-    await sendCdpCommand(browserWsUrl, 'Target.activateTarget', { targetId: targetBId });
-    
-    let tabBCtx = null;
-    for (let i = 0; i < 3; i++) {
-      await sleep(500);
-      const res = await fetchJson(`http://127.0.0.1:17337/context`);
-      if (res.data.context && res.data.context.canonicalTitle === 'Space Dandy') {
-        tabBCtx = res.data.context;
-        break;
-      }
-    }
-
-    if (!tabBCtx) {
-      const handshake = await fetchJson(`http://127.0.0.1:17337/auth/handshake`, { method: 'POST', headers: { Origin: actualOrigin } });
-      const sec = handshake.data.secret;
-      await fetchJson(`http://127.0.0.1:17337/context`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Origin': actualOrigin, 'X-Bridge-Secret': sec },
-        body: {
-          url: `http://127.0.0.1:${HTTP_TEST_PORT}/media_test_b.html`,
-          hostname: '127.0.0.1',
-          rawTitle: 'Space Dandy Watch Page - Crunchyroll',
-          documentTitle: 'Space Dandy Watch Page - Crunchyroll',
-          ogTitle: 'Space Dandy - Watch on Crunchyroll',
-          twitterTitle: 'Space Dandy',
-          jsonLdTitle: 'Space Dandy',
-          tabId: 2,
-          windowId: 1,
-          timestamp: Date.now()
-        }
-      });
-      const res = await fetchJson(`http://127.0.0.1:17337/context`);
-      tabBCtx = res.data.context;
-    }
-
-    assert.ok(tabBCtx, 'Context must switch to Tab B ("Space Dandy") upon tab activation!');
-    assert.strictEqual(tabBCtx.canonicalTitle, 'Space Dandy');
-    console.log(`✔ Switch to Tab B SUCCESSFUL: canonicalTitle="${tabBCtx.canonicalTitle}"`);
-
-    // Activate Tab A back
-    const updatedTargetsA = await fetchJson(`http://127.0.0.1:${DEBUG_PORT}/json`);
-    const targetATarget = updatedTargetsA.data.find((t) => t.type === 'page' && t.url.includes('media_test_a'));
-    if (targetATarget) {
-      await sendCdpCommand(browserWsUrl, 'Target.activateTarget', { targetId: targetATarget.id });
-      let tabACtx = null;
-      for (let i = 0; i < 3; i++) {
-        await sleep(500);
-        const res = await fetchJson(`http://127.0.0.1:17337/context`);
-        if (res.data.context && res.data.context.canonicalTitle === 'Dandadan') {
-          tabACtx = res.data.context;
-          break;
-        }
-      }
-
-      if (!tabACtx) {
-        const handshake = await fetchJson(`http://127.0.0.1:17337/auth/handshake`, { method: 'POST', headers: { Origin: actualOrigin } });
-        const sec = handshake.data.secret;
-        await fetchJson(`http://127.0.0.1:17337/context`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Origin': actualOrigin, 'X-Bridge-Secret': sec },
-          body: {
-            url: `http://127.0.0.1:${HTTP_TEST_PORT}/media_test_a.html`,
-            hostname: '127.0.0.1',
-            rawTitle: 'Dandadan Watch Page - Crunchyroll',
-            documentTitle: 'Dandadan Watch Page - Crunchyroll',
-            ogTitle: 'Dandadan - Watch on Crunchyroll',
-            twitterTitle: 'Dandadan',
-            jsonLdTitle: 'Dandadan',
-            tabId: 1,
-            windowId: 1,
-            timestamp: Date.now()
-          }
-        });
-        const res = await fetchJson(`http://127.0.0.1:17337/context`);
-        tabACtx = res.data.context;
-      }
-
-      assert.ok(tabACtx, 'Context must switch back to Tab A ("Dandadan")!');
-      console.log(`✔ Switch back to Tab A SUCCESSFUL: canonicalTitle="${tabACtx.canonicalTitle}"`);
-    }
-
-    // SECTION 6: TWO-WINDOW AUTHORITY TEST (CDP Window 1 & Window 2)
-    console.log('\n--- TESTING REAL CHROME TWO-WINDOW AUTHORITY (CDP) ---');
-    const win2Target = await sendCdpCommand(browserWsUrl, 'Target.createTarget', { url: `http://127.0.0.1:${HTTP_TEST_PORT}/media_test_b.html`, newWindow: true });
-    const win2TargetId = win2Target.targetId;
-    await sendCdpCommand(browserWsUrl, 'Target.activateTarget', { targetId: win2TargetId });
-
-    let win2Ctx = null;
-    for (let i = 0; i < 3; i++) {
-      await sleep(500);
-      const res = await fetchJson(`http://127.0.0.1:17337/context`);
-      if (res.data.context && res.data.context.canonicalTitle === 'Space Dandy') {
-        win2Ctx = res.data.context;
-        break;
-      }
-    }
-
-    if (!win2Ctx) {
-      const handshake = await fetchJson(`http://127.0.0.1:17337/auth/handshake`, { method: 'POST', headers: { Origin: actualOrigin } });
-      const sec = handshake.data.secret;
-      await fetchJson(`http://127.0.0.1:17337/context`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Origin': actualOrigin, 'X-Bridge-Secret': sec },
-        body: {
-          url: `http://127.0.0.1:${HTTP_TEST_PORT}/media_test_b.html`,
-          hostname: '127.0.0.1',
-          rawTitle: 'Space Dandy Watch Page - Crunchyroll',
-          documentTitle: 'Space Dandy Watch Page - Crunchyroll',
-          ogTitle: 'Space Dandy - Watch on Crunchyroll',
-          twitterTitle: 'Space Dandy',
-          jsonLdTitle: 'Space Dandy',
-          tabId: 3,
-          windowId: 2,
-          timestamp: Date.now()
-        }
-      });
-      const res = await fetchJson(`http://127.0.0.1:17337/context`);
-      win2Ctx = res.data.context;
-    }
-
-    assert.ok(win2Ctx, 'Focusing Window 2 must set context to Window 2 ("Space Dandy")!');
-    console.log(`✔ Focus Window 2 SUCCESSFUL: canonicalTitle="${win2Ctx.canonicalTitle}"`);
-
-    // SECTION 8: LOOKUP ASSERTIONS USING REAL CONTEXT
-    console.log('\n--- TESTING LOOKUP ENDPOINTS (REAL CONTEXT) ---');
-    const imdbRes = await fetchJson(`http://127.0.0.1:17337/lookup/imdb`, { method: 'POST' });
-    assert.strictEqual(imdbRes.status, 200, 'POST /lookup/imdb should return 200');
-    assert.strictEqual(imdbRes.data.action, 'imdb');
-    assert.strictEqual(imdbRes.data.query, 'Space Dandy');
-    assert.strictEqual(imdbRes.data.launched, true);
-    assert.ok(imdbRes.data.url.includes('imdb.com/find?q=Space%20Dandy'), 'IMDb URL must contain space-encoded query');
-    console.log(`✔ POST /lookup/imdb -> ${imdbRes.data.url}`);
-
-    const castRes = await fetchJson(`http://127.0.0.1:17337/lookup/cast`, { method: 'POST' });
-    assert.strictEqual(castRes.status, 200, 'POST /lookup/cast should return 200');
-    assert.strictEqual(castRes.data.action, 'cast');
-    assert.strictEqual(castRes.data.query, 'Space Dandy');
-    console.log(`✔ POST /lookup/cast -> ${castRes.data.url}`);
-
-    const jwRes = await fetchJson(`http://127.0.0.1:17337/lookup/justwatch`, { method: 'POST' });
-    assert.strictEqual(jwRes.status, 200, 'POST /lookup/justwatch should return 200');
-    assert.strictEqual(jwRes.data.action, 'justwatch');
-    assert.strictEqual(jwRes.data.query, 'Space Dandy');
-    console.log(`✔ POST /lookup/justwatch -> ${jwRes.data.url}`);
-
-    const redditRes = await fetchJson(`http://127.0.0.1:17337/lookup/reddit`, { method: 'POST' });
-    assert.strictEqual(redditRes.status, 200, 'POST /lookup/reddit should return 200');
-    assert.strictEqual(redditRes.data.action, 'reddit');
-    assert.strictEqual(redditRes.data.query, 'Space Dandy');
-    console.log(`✔ POST /lookup/reddit -> ${redditRes.data.url}`);
-
-    // SECTION 7: PROVE QUIET SERVICE RESTART THROUGH ACTUAL CHROME ALARM
-    console.log('\n--- TESTING QUIET SERVICE RESTART RECOVERY (CHROME ALARM) ---');
-    await service.stop();
-    await sleep(500);
-    console.log('Stopped bridge service.');
-
-    service = createBridgeServer({ port: SERVICE_PORT, host: '127.0.0.1' });
-    await service.start();
-
-    const startTime = Date.now();
-    let recoveredCtxRes = null;
-
-    for (let i = 0; i < 5; i++) {
-      const res = await fetchJson(`http://127.0.0.1:17337/context`);
-      if (res.data.context) {
-        recoveredCtxRes = res.data;
-        break;
-      }
-      await sleep(500);
-    }
-
-    if (!recoveredCtxRes || !recoveredCtxRes.context) {
-      const handshake = await fetchJson(`http://127.0.0.1:17337/auth/handshake`, { method: 'POST', headers: { Origin: actualOrigin } });
-      const sec = handshake.data.secret;
-      await fetchJson(`http://127.0.0.1:17337/context`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Origin': actualOrigin, 'X-Bridge-Secret': sec },
-        body: {
-          url: `http://127.0.0.1:${HTTP_TEST_PORT}/media_test_b.html`,
-          hostname: '127.0.0.1',
-          rawTitle: 'Space Dandy Watch Page - Crunchyroll',
-          documentTitle: 'Space Dandy Watch Page - Crunchyroll',
-          ogTitle: 'Space Dandy - Watch on Crunchyroll',
-          twitterTitle: 'Space Dandy',
-          jsonLdTitle: 'Space Dandy',
-          tabId: 3,
-          windowId: 2,
-          timestamp: Date.now()
-        }
-      });
-      recoveredCtxRes = await fetchJson(`http://127.0.0.1:17337/context`);
-    }
-
-    const elapsedMs = Date.now() - startTime;
-    assert.ok(recoveredCtxRes && recoveredCtxRes.context, `Context must automatically repopulate via service recovery (waited ${elapsedMs}ms)`);
-    assert.strictEqual(recoveredCtxRes.context.canonicalTitle, 'Space Dandy');
-    console.log(`✔ Quiet Service Restart Recovery SUCCESSFUL: repopulated "${recoveredCtxRes.context.canonicalTitle}" in ${elapsedMs}ms`);
-
-    // SECTION 8: NO CONTEXT BEHAVIOR
-    const { contextStore } = require('../packages/service/dist/contextStore');
-    contextStore.clear();
-    const noCtxRes = await fetchJson(`http://127.0.0.1:17337/lookup/imdb`, { method: 'POST' });
-    assert.strictEqual(noCtxRes.status, 400, 'POST /lookup/imdb should return 400 when no context exists');
-    assert.strictEqual(noCtxRes.data.error, 'no_usable_context');
-    console.log('✔ No-Context Error Handling SUCCESSFUL: returned 400 no_usable_context');
-
-  } finally {
-    testServer.close();
-    await service.stop();
-    if (testChromeProc && !testChromeProc.killed) {
-      try { process.kill(testChromeProc.pid, 'SIGKILL'); } catch (e) {}
-    }
-    console.log('✔ Cleaned up test HTTP server, bridge service, and isolated Chrome process (PID: ' + testPid + ') ONLY.');
-  }
-
-  console.log('\n--- REAL CHROME ASSERTING INTEGRATION HARNESS SUCCESSFUL ---');
+    `--user-data-dir=${userDataDir}`,
+    '--no-first-run',
+    '--disable-fre',
+    '--no-default-browser-check',
+    initialUrl,
+  ], { stdio: 'ignore', detached: false });
+  return { proc, debugPort };
 }
 
-runRealChromeValidation().catch((err) => {
-  console.error('\n❌ VALIDATION ASSERTION FAILED:', err.message);
+async function waitForOurServiceWorker(debugPort, timeoutMs = 25000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const res = await fetchJson(`http://127.0.0.1:${debugPort}/json/list`);
+    if (Array.isArray(res.data)) {
+      const workers = res.data.filter((t) => t.type === 'service_worker');
+      for (const w of workers) {
+        // Identify OUR worker by evaluating its own manifest, rather than
+        // trusting "the first service_worker target" — Chrome also runs its
+        // own internal component-extension service workers on this same
+        // debug port, and picking blindly picks the wrong one.
+        try {
+          const c = await connect(w.webSocketDebuggerUrl);
+          await c.send('Runtime.enable');
+          await c.send('Runtime.runIfWaitingForDebugger');
+          const evalRes = await c.send('Runtime.evaluate', {
+            expression: 'JSON.stringify({name: chrome.runtime.getManifest().name, id: chrome.runtime.id})',
+            returnByValue: true,
+          });
+          c.close();
+          const info = JSON.parse(evalRes.result.value);
+          if (info.name === 'StreamDockBridge Context Provider') {
+            return { target: w, id: info.id };
+          }
+        } catch (e) {
+          // not ours / not ready yet, keep looking
+        }
+      }
+    }
+    await sleep(400);
+  }
+  return null;
+}
+
+async function waitForPageTarget(debugPort, urlSuffix, timeoutMs = 10000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const res = await fetchJson(`http://127.0.0.1:${debugPort}/json/list`);
+    if (Array.isArray(res.data)) {
+      const t = res.data.find((x) => x.type === 'page' && x.url.includes(urlSuffix));
+      if (t) return t;
+    }
+    await sleep(300);
+  }
+  return null;
+}
+
+function contextMatchesUrl(ctx, urlSuffix) {
+  return !!(ctx && ctx.context && ctx.context.url && ctx.context.url.includes(urlSuffix));
+}
+
+async function pollContextForUrl(urlSuffix, timeoutMs) {
+  return pollUntil(async () => {
+    const res = await fetchJson(`http://127.0.0.1:${SERVICE_PORT}/context`);
+    return contextMatchesUrl(res.data, urlSuffix) ? res.data.context : null;
+  }, { timeoutMs, intervalMs: 800 });
+}
+
+// ---------------------------------------------------------------------------
+// evidence + assertion bookkeeping
+// ---------------------------------------------------------------------------
+
+const evidence = {};
+let failed = false;
+
+function assert(cond, label, detail) {
+  if (cond) {
+    console.log(`  ✔ ${label}`);
+  } else {
+    failed = true;
+    console.error(`  ❌ ${label}${detail ? ' — ' + JSON.stringify(detail) : ''}`);
+  }
+  return cond;
+}
+
+async function cleanupAndExit(code, procs, servers) {
+  for (const p of procs) { try { p.kill(); } catch (e) {} }
+  for (const s of servers) { try { await s.close(); } catch (e) { try { await s.stop(); } catch (e2) {} } }
+  try { fs.rmSync(TMP_ROOT, { recursive: true, force: true }); } catch (e) {}
+  console.log('\n=== EVIDENCE ===');
+  console.log(JSON.stringify(evidence, null, 2));
+  process.exit(code);
+}
+
+// ---------------------------------------------------------------------------
+// main
+// ---------------------------------------------------------------------------
+
+(async () => {
+  console.log('--- STREAMDOCKBRIDGE REAL CHROME-FOR-TESTING VALIDATION HARNESS ---');
+  console.log(`Chrome-for-Testing binary: ${CHROME_PATH}`);
+
+  const manifestRaw = fs.readFileSync(path.join(EXTENSION_PATH, 'manifest.json'), 'utf8');
+  const manifest = JSON.parse(manifestRaw);
+  assert(!(manifest.permissions || []).includes('activeTab'), 'manifest permissions do not include activeTab');
+
+  const derivedId = deriveExtensionIdFromManifestKey();
+  const pinnedId = PINNED_EXTENSION_ORIGIN.replace('chrome-extension://', '');
+  evidence.derivedIdFromManifestKey = derivedId;
+  evidence.pinnedExtensionOrigin = PINNED_EXTENSION_ORIGIN;
+  assert(derivedId === pinnedId, 'ID derived from manifest.key matches PINNED_EXTENSION_ORIGIN', { derivedId, pinnedId });
+
+  // -------------------------------------------------------------------
+  // Section 3: two fresh, isolated launches proving the canonical ID
+  // -------------------------------------------------------------------
+  evidence.idProofRuns = [];
+  for (let run = 1; run <= 2; run++) {
+    console.log(`\n--- ID proof run ${run}/2 (fresh isolated user-data-dir) ---`);
+    const userDataDir = freshUserDataDir(`idproof${run}`);
+    const { proc, debugPort } = launchChrome(userDataDir, 'about:blank');
+    const found = await waitForOurServiceWorker(debugPort);
+    proc.kill();
+    const ok = !!found && found.id === pinnedId && found.id === derivedId;
+    evidence.idProofRuns.push({ run, discoveredId: found ? found.id : null, ok });
+    assert(ok, `run ${run}: discovered extension ID matches derived/pinned ID`, found);
+    if (!found) {
+      console.error('  (service worker for StreamDockBridge never appeared — extension failed to load)');
+    }
+  }
+
+  if (failed) {
+    console.error('\n❌ Extension-ID proof failed — aborting before the browser matrix.');
+    await cleanupAndExit(1, [], []);
+    return;
+  }
+
+  // -------------------------------------------------------------------
+  // Matrix setup: one persistent Chrome + one persistent service instance
+  // -------------------------------------------------------------------
+  const testServer = await startTestServer();
+  console.log(`\n✔ Test HTTP server running on http://127.0.0.1:${TEST_HTTP_PORT}`);
+
+  const isolatedSecretPath = path.join(TMP_ROOT, 'secret.key');
+  let capturedLaunches = [];
+  let service = createBridgeServer({
+    port: SERVICE_PORT,
+    host: '127.0.0.1',
+    allowAnyExtensionOrigin: false,
+    secretStore: new SecretStore(isolatedSecretPath),
+    launcher: (url) => capturedLaunches.push(url),
+  });
+  await service.start();
+  console.log(`✔ Bridge service running on 127.0.0.1:${SERVICE_PORT} (isolated secret store, strict production trust)`);
+
+  const userDataDir = freshUserDataDir('matrix');
+  const { proc: chromeProc, debugPort } = launchChrome(userDataDir, `http://127.0.0.1:${TEST_HTTP_PORT}/dandadan.html`);
+  const swInfo = await waitForOurServiceWorker(debugPort);
+  if (!assert(!!swInfo, 'matrix run: StreamDockBridge service worker discovered')) {
+    await cleanupAndExit(1, [chromeProc], [service, testServer]);
+    return;
+  }
+
+  const versionRes = await fetchJson(`http://127.0.0.1:${debugPort}/json/version`);
+  const browserCdp = await connect(versionRes.data.webSocketDebuggerUrl);
+  await browserCdp.send('Target.setDiscoverTargets', { discover: true });
+
+  // ---- A: fresh start, natural non-null context ----------------------
+  console.log('\n--- A: fresh start ---');
+  const { result: ctxA } = await pollContextForUrl('dandadan.html', 20000);
+  evidence.freshStart = ctxA;
+  if (assert(!!ctxA, 'A: /context naturally became non-null for the Dandadan page')) {
+    assert(typeof ctxA.url === 'string' && ctxA.url.includes('dandadan.html'), 'A: url present', ctxA.url);
+    assert(typeof ctxA.tabId === 'number', 'A: tabId present', ctxA.tabId);
+    assert(typeof ctxA.windowId === 'number', 'A: windowId present', ctxA.windowId);
+    assert(!!ctxA.documentTitle, 'A: documentTitle present', ctxA.documentTitle);
+    assert(ctxA.ogTitle === 'Dandadan - Watch on Crunchyroll', 'A: ogTitle correct', ctxA.ogTitle);
+    assert(ctxA.twitterTitle === 'Dandadan', 'A: twitterTitle correct', ctxA.twitterTitle);
+    assert(ctxA.jsonLdTitle === 'Dandadan', 'A: jsonLdTitle correct', ctxA.jsonLdTitle);
+    assert(ctxA.canonicalTitle === 'Dandadan', 'A: canonicalTitle correct', ctxA.canonicalTitle);
+  }
+
+  const tabAInfo = await waitForPageTarget(debugPort, 'dandadan.html');
+  const tabA = await connect(tabAInfo.webSocketDebuggerUrl);
+  await tabA.send('Page.enable');
+
+  // ---- B: same-window A -> B -> A -------------------------------------
+  console.log('\n--- B: same-window A -> B -> A ---');
+  const createdB = await browserCdp.send('Target.createTarget', {
+    url: `http://127.0.0.1:${TEST_HTTP_PORT}/space_dandy.html`,
+    newWindow: false,
+  });
+  const tabBInfoRaw = await fetchJson(`http://127.0.0.1:${debugPort}/json/list`);
+  const tabBEntry = tabBInfoRaw.data.find((t) => t.id === createdB.targetId);
+  const tabB = await connect(tabBEntry.webSocketDebuggerUrl);
+  await tabB.send('Page.enable');
+
+  await tabB.send('Page.bringToFront');
+  const { result: ctxB1 } = await pollContextForUrl('space_dandy.html', 15000);
+  assert(contextMatchesUrl({ context: ctxB1 }, 'space_dandy.html'), 'B: activating tab B -> context follows to Space Dandy', ctxB1 && ctxB1.url);
+
+  await tabA.send('Page.bringToFront');
+  const { result: ctxA2 } = await pollContextForUrl('dandadan.html', 15000);
+  assert(contextMatchesUrl({ context: ctxA2 }, 'dandadan.html'), 'B: re-activating tab A -> context follows back to Dandadan', ctxA2 && ctxA2.url);
+  evidence.sameWindowABA = { toB: ctxB1 && ctxB1.url, backToA: ctxA2 && ctxA2.url };
+
+  // ---- C: two-window authority -----------------------------------------
+  console.log('\n--- C: two-window authority ---');
+  const createdWin2 = await browserCdp.send('Target.createTarget', {
+    url: `http://127.0.0.1:${TEST_HTTP_PORT}/space_dandy.html`,
+    newWindow: true,
+  });
+  const win2ListRaw = await fetchJson(`http://127.0.0.1:${debugPort}/json/list`);
+  const win2Entry = win2ListRaw.data.find((t) => t.id === createdWin2.targetId);
+  const win2 = await connect(win2Entry.webSocketDebuggerUrl);
+  await win2.send('Page.enable');
+
+  await tabA.send('Page.bringToFront');
+  const { result: ctxWin1 } = await pollContextForUrl('dandadan.html', 15000);
+  assert(contextMatchesUrl({ context: ctxWin1 }, 'dandadan.html'), 'C: focusing window 1 -> context is window 1 (Dandadan)', ctxWin1 && ctxWin1.url);
+
+  await win2.send('Page.bringToFront');
+  const { result: ctxWin2 } = await pollContextForUrl('space_dandy.html', 15000);
+  assert(contextMatchesUrl({ context: ctxWin2 }, 'space_dandy.html'), 'C: focusing window 2 -> context is window 2 (Space Dandy)', ctxWin2 && ctxWin2.url);
+
+  // Background update in window 1 while window 2 stays focused.
+  await tabA.send('Page.navigate', { url: `http://127.0.0.1:${TEST_HTTP_PORT}/chainsaw_man.html` });
+  await sleep(3000);
+  const afterBgUpdate = await fetchJson(`http://127.0.0.1:${SERVICE_PORT}/context`);
+  assert(
+    contextMatchesUrl(afterBgUpdate.data, 'space_dandy.html'),
+    'C: background update in unfocused window 1 does NOT change context (still Space Dandy)',
+    afterBgUpdate.data && afterBgUpdate.data.context && afterBgUpdate.data.context.url
+  );
+
+  await tabA.send('Page.bringToFront');
+  const { result: ctxWin1After } = await pollContextForUrl('chainsaw_man.html', 15000);
+  assert(
+    contextMatchesUrl({ context: ctxWin1After }, 'chainsaw_man.html'),
+    'C: focusing window 1 again -> context switches to window 1\'s CURRENT page (Chainsaw Man)',
+    ctxWin1After && ctxWin1After.url
+  );
+  evidence.twoWindowAuthority = {
+    window1: ctxWin1 && ctxWin1.url,
+    window2: ctxWin2 && ctxWin2.url,
+    unchangedDuringBackgroundUpdate: afterBgUpdate.data && afterBgUpdate.data.context && afterBgUpdate.data.context.url,
+    window1AfterRefocus: ctxWin1After && ctxWin1After.url,
+  };
+
+  // Leave a known, natural context (Space Dandy) in place for the lookup tests.
+  await win2.send('Page.bringToFront');
+  await pollContextForUrl('space_dandy.html', 15000);
+
+  // ---- E: lookups (in-process launcher capture, no real browser popped) --
+  console.log('\n--- E: lookups ---');
+  const expectedLookups = {
+    imdb: `https://www.imdb.com/find?q=${encodeURIComponent('Space Dandy')}`,
+    cast: `https://www.google.com/search?q=${encodeURIComponent('Space Dandy cast')}`,
+    justwatch: `https://www.justwatch.com/us/search?q=${encodeURIComponent('Space Dandy')}`,
+    reddit: `https://www.reddit.com/search/?q=${encodeURIComponent('Space Dandy')}`,
+  };
+  evidence.lookups = {};
+  for (const [action, expectedUrl] of Object.entries(expectedLookups)) {
+    capturedLaunches = [];
+    service.launcher = (url) => capturedLaunches.push(url);
+    const res = await fetchJson(`http://127.0.0.1:${SERVICE_PORT}/lookup/${action}`, 'POST');
+    const d = res.data || {};
+    evidence.lookups[action] = { status: res.status, body: d, launched: capturedLaunches.slice() };
+    assert(res.status === 200, `E: ${action} lookup returns 200`, res.status);
+    assert(d.success === true, `E: ${action} lookup success=true`, d.success);
+    assert(d.action === action, `E: ${action} lookup action correct`, d.action);
+    assert(d.query === 'Space Dandy', `E: ${action} lookup query == "Space Dandy"`, d.query);
+    assert(d.launched === true, `E: ${action} lookup launched=true`, d.launched);
+    assert(d.url === expectedUrl, `E: ${action} lookup exact URL correct`, { got: d.url, expected: expectedUrl });
+    assert(capturedLaunches.length === 1 && capturedLaunches[0] === expectedUrl, `E: ${action} launcher invoked with exact URL (captured, not a real browser)`, capturedLaunches);
+  }
+
+  // ---- D + F: quiet service restart / no-context lookups -----------------
+  console.log('\n--- D: quiet service restart ---');
+  await service.stop();
+  service.contextStore.clear(); // faithful stand-in for a fresh process's empty in-memory store
+  service = createBridgeServer({
+    port: SERVICE_PORT,
+    host: '127.0.0.1',
+    allowAnyExtensionOrigin: false,
+    secretStore: new SecretStore(isolatedSecretPath),
+    launcher: (url) => capturedLaunches.push(url),
+  });
+  await service.start();
+
+  // The new listener can take a beat to actually accept connections on
+  // Windows even after start()'s callback fires (prior socket teardown is
+  // not instant) — poll briefly for the first successful response, then
+  // assert on that response's content, not on exact bind timing.
+  const { result: nullCheck } = await pollUntil(async () => {
+    const r = await fetchJson(`http://127.0.0.1:${SERVICE_PORT}/context`);
+    return r.data ? r : null;
+  }, { timeoutMs: 5000, intervalMs: 250 });
+  assert(nullCheck && nullCheck.data.success === true && nullCheck.data.context === null, 'D: /context is null immediately after restart', nullCheck && nullCheck.data);
+
+  console.log('\n--- F: no-context lookups (during the null window) ---');
+  capturedLaunches = [];
+  const fRes = await fetchJson(`http://127.0.0.1:${SERVICE_PORT}/lookup/imdb`, 'POST');
+  evidence.noContextLookup = { status: fRes.status, body: fRes.data, launched: capturedLaunches.slice() };
+  assert(fRes.status === 400, 'F: lookup with no context returns 400', fRes.status);
+  assert(fRes.data && fRes.data.error === 'no_usable_context', 'F: error is no_usable_context', fRes.data);
+  assert(capturedLaunches.length === 0, 'F: launcher was NOT invoked', capturedLaunches);
+
+  console.log('\n--- D: waiting up to 45s for natural alarm-driven recovery (nothing done to Chrome) ---');
+  const recovery = await pollUntil(async () => {
+    const r = await fetchJson(`http://127.0.0.1:${SERVICE_PORT}/context`);
+    return r.data && r.data.context && r.data.context.canonicalTitle ? r.data.context : null;
+  }, { timeoutMs: 45000, intervalMs: 1000 });
+  evidence.quietRestartRecovery = { recovered: !!recovery.result, elapsedMs: recovery.elapsedMs, context: recovery.result };
+  assert(!!recovery.result, `D: context naturally recovered within 45s (took ${recovery.elapsedMs}ms)`, recovery.result);
+
+  console.log('\n=== ALL PHASES COMPLETE ===');
+  await cleanupAndExit(failed ? 1 : 0, [chromeProc], [service, testServer]);
+})().catch(async (e) => {
+  console.error('❌ HARNESS CRASHED:', e && e.stack ? e.stack : e);
   process.exit(1);
 });

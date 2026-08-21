@@ -15,20 +15,13 @@ export interface BridgeServerOptions {
 
 export const PINNED_EXTENSION_ORIGIN = 'chrome-extension://ldhiheiinaifckcfjmbmaaigdmknnpgi';
 export const ALLOWED_EXTENSION_ORIGIN = PINNED_EXTENSION_ORIGIN;
-export const CLI_TEST_EXTENSION_ORIGIN = [
-  'chrome-extension://fignfifoniblkonapihmkfakmlgkbkcf',
-  'chrome-extension://ldhiheiinaifckcfjmbmaaigdmknnpgi',
-];
 
 export function isAllowedOrigin(origin: string | undefined, allowAnyExtension = false): boolean {
   if (!origin) return true;
   if (allowAnyExtension) {
     if (origin.startsWith('chrome-extension://')) return true;
   }
-  if (origin === PINNED_EXTENSION_ORIGIN || CLI_TEST_EXTENSION_ORIGIN.includes(origin)) {
-    return true;
-  }
-  return false;
+  return origin === PINNED_EXTENSION_ORIGIN;
 }
 
 export interface BridgeServerInstance {

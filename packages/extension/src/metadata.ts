@@ -1,4 +1,5 @@
-﻿export interface PageMetadata {
+export interface PageMetadata {
+  url?: string;
   documentTitle: string;
   ogTitle?: string;
   twitterTitle?: string;
@@ -50,42 +51,55 @@ function flattenJsonLd(node: any): any[] {
   return results;
 }
 
+export function cleanTitleText(text: string | null | undefined): string {
+  if (!text) return '';
+  return text.replace(/\s+/g, ' ').trim();
+}
+
 export function extractPageMetadata(doc: Document): PageMetadata {
-  const documentTitle = doc.title || '';
+  const meta: PageMetadata = {
+    url: typeof doc !== 'undefined' && doc.location ? doc.location.href : '',
+    documentTitle: cleanTitleText(doc.title),
+  };
 
-  const ogElem = doc.querySelector('meta[property="og:title"]');
-  const ogTitle = ogElem ? (ogElem.getAttribute('content') || undefined) : undefined;
+  try {
+    const ogMeta = doc.querySelector('meta[property="og:title"]');
+    if (ogMeta) {
+      const content = ogMeta.getAttribute('content');
+      if (content) meta.ogTitle = cleanTitleText(content);
+    }
 
-  const twElem = doc.querySelector('meta[name="twitter:title"]');
-  const twitterTitle = twElem ? (twElem.getAttribute('content') || undefined) : undefined;
+    const twitterMeta = doc.querySelector('meta[name="twitter:title"]');
+    if (twitterMeta) {
+      const content = twitterMeta.getAttribute('content');
+      if (content) meta.twitterTitle = cleanTitleText(content);
+    }
 
-  let jsonLdTitle: string | undefined = undefined;
-  const jsonLdScripts = doc.querySelectorAll('script[type="application/ld+json"]');
-
-  for (let i = 0; i < jsonLdScripts.length; i++) {
-    try {
-      const parsed = JSON.parse(jsonLdScripts[i].textContent || '');
-      const items = flattenJsonLd(parsed);
-      for (const item of items) {
-        if (!item || typeof item !== 'object') continue;
-        if (isMediaObjectType(item['@type'])) {
-          const candidate = item.name || item.headline;
-          if (typeof candidate === 'string' && candidate.trim()) {
-            jsonLdTitle = candidate.trim();
-            break;
+    const jsonLdScripts = doc.querySelectorAll('script[type="application/ld+json"]');
+    for (let i = 0; i < jsonLdScripts.length; i++) {
+      try {
+        const text = jsonLdScripts[i].textContent;
+        if (!text) continue;
+        const parsed = JSON.parse(text);
+        const items = flattenJsonLd(parsed);
+        for (const item of items) {
+          if (!item || typeof item !== 'object') continue;
+          if (isMediaObjectType(item['@type'])) {
+            const candidate = item.name || item.headline;
+            if (typeof candidate === 'string' && candidate.trim()) {
+              meta.jsonLdTitle = cleanTitleText(candidate);
+              break;
+            }
           }
         }
+        if (meta.jsonLdTitle) break;
+      } catch (e) {
+        // Ignore JSON parse errors in LD+JSON blocks
       }
-      if (jsonLdTitle) break;
-    } catch (e) {
-      // Ignore JSON parse errors
     }
+  } catch (e) {
+    // Best effort extraction
   }
 
-  return {
-    documentTitle,
-    ogTitle: ogTitle ? ogTitle.trim() : undefined,
-    twitterTitle: twitterTitle ? twitterTitle.trim() : undefined,
-    jsonLdTitle,
-  };
+  return meta;
 }
