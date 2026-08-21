@@ -1,15 +1,9 @@
 ﻿import * as http from 'http';
+import { URL } from 'url';
 import { contextStore, ContextRecord } from './contextStore';
-import { SecretStore } from './secretStore';
 import { deriveCanonicalTitle, MetadataPayload } from './titleCleaner';
-import {
-  LauncherFn,
-  defaultSystemLauncher,
-  buildImdbUrl,
-  buildCastUrl,
-  buildJustWatchUrl,
-  buildRedditUrl,
-} from './launcher';
+import { SecretStore } from './secretStore';
+import { LauncherFn, defaultSystemLauncher } from './launcher';
 
 export const ALLOWED_EXTENSION_ID = 'ldhiheiinaifckcfjmbmaaigdmknnpgi';
 export const ALLOWED_EXTENSION_ORIGIN = `chrome-extension://${ALLOWED_EXTENSION_ID}`;
@@ -19,12 +13,16 @@ export interface ServerOptions {
   host?: string;
   secretStore?: SecretStore;
   launcher?: LauncherFn;
+  allowAnyExtensionOrigin?: boolean;
 }
 
-export function isAllowedOrigin(origin: string | undefined): boolean {
-  if (!origin) return true; // No Origin header (Node.js, curl, direct local processes)
-  if (origin === ALLOWED_EXTENSION_ORIGIN) return true; // Exact pinned Chrome Extension ID
-  return false; // Reject arbitrary extension IDs and web page origins
+export function isAllowedOrigin(origin: string | undefined, allowAnyExtension = false): boolean {
+  if (!origin) return true;
+  if (origin === ALLOWED_EXTENSION_ORIGIN) return true;
+  if (allowAnyExtension && origin.startsWith('chrome-extension://')) {
+    return true;
+  }
+  return false;
 }
 
 export function createBridgeServer(options: ServerOptions = {}) {
@@ -32,12 +30,13 @@ export function createBridgeServer(options: ServerOptions = {}) {
   const host = options.host || '127.0.0.1';
   const secretStore = options.secretStore || new SecretStore();
   const launcher = options.launcher || defaultSystemLauncher;
+  const allowAnyExt = options.allowAnyExtensionOrigin || false;
 
   const server = http.createServer(async (req, res) => {
     const origin = req.headers['origin'] as string | undefined;
 
     const setCorsHeaders = () => {
-      if (!origin || isAllowedOrigin(origin)) {
+      if (!origin || isAllowedOrigin(origin, allowAnyExt)) {
         res.setHeader('Access-Control-Allow-Origin', origin || '*');
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Bridge-Secret, Authorization, Access-Control-Request-Private-Network');
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -53,7 +52,7 @@ export function createBridgeServer(options: ServerOptions = {}) {
     };
 
     if (req.method === 'OPTIONS') {
-      if (origin && !isAllowedOrigin(origin)) {
+      if (origin && !isAllowedOrigin(origin, allowAnyExt)) {
         res.statusCode = 403;
         res.end();
         return;
@@ -67,7 +66,7 @@ export function createBridgeServer(options: ServerOptions = {}) {
     const url = new URL(req.url || '/', `http://${req.headers.host || '127.0.0.1'}`);
     const pathname = url.pathname;
 
-    if (origin && !isAllowedOrigin(origin)) {
+    if (origin && !isAllowedOrigin(origin, allowAnyExt)) {
       sendJson(403, { success: false, error: 'origin_forbidden' });
       return;
     }
@@ -133,39 +132,39 @@ export function createBridgeServer(options: ServerOptions = {}) {
 
     if (req.method === 'POST' && pathname.startsWith('/lookup/')) {
       const action = pathname.replace('/lookup/', '').toLowerCase();
-      const current = contextStore.getContext();
-      const title = current?.canonicalTitle;
+      const validActions = ['imdb', 'cast', 'justwatch', 'reddit'];
+      if (!validActions.includes(action)) {
+        sendJson(400, { success: false, error: 'invalid_action' });
+        return;
+      }
 
-      if (!title || !title.trim()) {
+      const activeContext = contextStore.getContext();
+      if (!activeContext || !activeContext.canonicalTitle) {
         sendJson(400, { success: false, error: 'no_usable_context' });
         return;
       }
 
+      const query = activeContext.canonicalTitle;
+      const encodedQuery = encodeURIComponent(query);
       let targetUrl = '';
-      if (action === 'imdb') {
-        targetUrl = buildImdbUrl(title);
-      } else if (action === 'cast') {
-        targetUrl = buildCastUrl(title);
-      } else if (action === 'justwatch') {
-        targetUrl = buildJustWatchUrl(title);
-      } else if (action === 'reddit') {
-        targetUrl = buildRedditUrl(title);
-      } else {
-        sendJson(404, { success: false, error: 'unknown_action' });
-        return;
+
+      switch (action) {
+        case 'imdb':
+          targetUrl = `https://www.imdb.com/find?q=${encodedQuery}`;
+          break;
+        case 'cast':
+          targetUrl = `https://www.google.com/search?q=${encodedQuery}+cast`;
+          break;
+        case 'justwatch':
+          targetUrl = `https://www.justwatch.com/us/search?q=${encodedQuery}`;
+          break;
+        case 'reddit':
+          targetUrl = `https://www.reddit.com/search/?q=${encodedQuery}`;
+          break;
       }
 
       const launched = await launcher(targetUrl);
-      if (launched) {
-        sendJson(200, { success: true, action, query: title, url: targetUrl });
-      } else {
-        sendJson(500, { success: false, error: 'launch_failed', action, url: targetUrl });
-      }
-      return;
-    }
-
-    if (pathname.startsWith('/lookup/')) {
-      sendJson(405, { success: false, error: 'method_not_allowed' });
+      sendJson(200, { success: true, action, query, url: targetUrl, launched });
       return;
     }
 
@@ -173,17 +172,8 @@ export function createBridgeServer(options: ServerOptions = {}) {
   });
 
   return {
-    start: () => new Promise<void>((resolve) => {
-      server.listen(port, host, () => {
-        resolve();
-      });
-    }),
-    stop: () => new Promise<void>((resolve, reject) => {
-      server.close((err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    }),
+    start: () => new Promise<void>((resolve) => server.listen(port, host, () => resolve())),
+    stop: () => new Promise<void>((resolve) => server.close(() => resolve())),
     server,
     secretStore,
   };

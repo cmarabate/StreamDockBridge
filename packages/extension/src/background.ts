@@ -14,6 +14,21 @@ export function setFocusedWindowId(windowId: number | null) {
   focusedWindowId = windowId;
 }
 
+export function isFocusedWindow(winId?: number): boolean {
+  if (focusedWindowId === null || (typeof chrome !== 'undefined' && chrome.windows && focusedWindowId === chrome.windows.WINDOW_ID_NONE)) {
+    return true;
+  }
+  return winId === focusedWindowId;
+}
+
+export function getIsServiceOffline(): boolean {
+  return isServiceOffline;
+}
+
+export function setIsServiceOffline(offline: boolean) {
+  isServiceOffline = offline;
+}
+
 export async function getSecret(): Promise<string | null> {
   if (cachedSecret) return cachedSecret;
 
@@ -35,18 +50,36 @@ export async function getSecret(): Promise<string | null> {
         await new Promise<void>((resolve) => chrome.storage.local.set({ bridgeSecret: data.secret }, () => resolve()));
         return cachedSecret;
       }
+    } else {
+      console.warn('[Extension Handshake Failed]: status', res.status);
     }
   } catch (e) {
-    // Handshake failed
+    console.warn('[Extension Handshake Error]:', e);
   }
 
   return null;
 }
 
+export async function recoveryTick() {
+  try {
+    const res = await fetch(`${SERVICE_URL}/context`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && data.context === null) {
+        syncActiveContext();
+      }
+      isServiceOffline = false;
+    } else {
+      isServiceOffline = true;
+    }
+  } catch (e) {
+    isServiceOffline = true;
+  }
+}
+
 export async function syncActiveContext() {
   const currentSequence = ++latestSequenceId;
 
-  // Query active tab for the focused window authority
   const queryInfo: chrome.tabs.QueryInfo = { active: true };
   if (focusedWindowId !== null && typeof chrome !== 'undefined' && chrome.windows && focusedWindowId !== chrome.windows.WINDOW_ID_NONE) {
     queryInfo.windowId = focusedWindowId;
@@ -74,11 +107,8 @@ export async function syncActiveContext() {
     const tabUrl: string = targetTab.url;
     const tabWindowId = targetTab.windowId;
 
-    // Check authority: If target tab belongs to a non-focused window, drop it
-    if (typeof chrome !== 'undefined' && chrome.windows && focusedWindowId !== null && focusedWindowId !== chrome.windows.WINDOW_ID_NONE) {
-      if (tabWindowId !== focusedWindowId) {
-        return;
-      }
+    if (!isFocusedWindow(tabWindowId)) {
+      return;
     }
 
     let meta: PageMetadata = { documentTitle: targetTab.title || '' };
@@ -87,7 +117,7 @@ export async function syncActiveContext() {
       try {
         meta = await new Promise<PageMetadata>((resolve) => {
           chrome.tabs.sendMessage(tabId, { action: 'GET_METADATA' }, (response) => {
-            if (chrome.runtime.lastError || !response) {
+            if (chrome.runtime?.lastError || !response) {
               resolve({ documentTitle: targetTab?.title || '' });
             } else {
               resolve(response);
@@ -99,14 +129,11 @@ export async function syncActiveContext() {
       }
     }
 
-    // RACE & FOCUS PROTECTION: Drop stale results if sequence ID changed or window focus changed
     if (currentSequence !== latestSequenceId) {
       return;
     }
-    if (typeof chrome !== 'undefined' && chrome.windows && focusedWindowId !== null && focusedWindowId !== chrome.windows.WINDOW_ID_NONE) {
-      if (tabWindowId !== focusedWindowId) {
-        return;
-      }
+    if (!isFocusedWindow(tabWindowId)) {
+      return;
     }
 
     let hostname = '';
@@ -147,35 +174,14 @@ export async function syncActiveContext() {
       if (res.ok) {
         isServiceOffline = false;
       } else {
+        console.warn('[Extension Context Post Failed]: status', res.status);
         isServiceOffline = true;
       }
     } catch (e) {
+      console.warn('[Extension Context Post Error]:', e);
       isServiceOffline = true;
-      // Schedule lightweight recovery check when service is offline
-      scheduleServiceRecovery();
     }
   });
-}
-
-let recoveryTimeout: any = null;
-export function scheduleServiceRecovery() {
-  if (recoveryTimeout) return;
-  recoveryTimeout = setTimeout(async () => {
-    recoveryTimeout = null;
-    try {
-      const res = await fetch(`${SERVICE_URL}/health`);
-      if (res.ok) {
-        isServiceOffline = false;
-        syncActiveContext();
-      } else if (isServiceOffline) {
-        scheduleServiceRecovery();
-      }
-    } catch (e) {
-      if (isServiceOffline) {
-        scheduleServiceRecovery();
-      }
-    }
-  }, 3000);
 }
 
 export function initExtension() {
@@ -197,13 +203,13 @@ export function initExtension() {
 
   if (typeof chrome !== 'undefined' && chrome.tabs) {
     chrome.tabs.onActivated.addListener((activeInfo) => {
-      if (focusedWindowId === null || activeInfo.windowId === focusedWindowId) {
+      if (isFocusedWindow(activeInfo.windowId)) {
         syncActiveContext();
       }
     });
 
     chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
-      if (tab.active && (focusedWindowId === null || tab.windowId === focusedWindowId)) {
+      if (tab.active && isFocusedWindow(tab.windowId)) {
         if (changeInfo.status === 'complete' || changeInfo.title || changeInfo.url) {
           syncActiveContext();
         }
@@ -218,8 +224,8 @@ export function initExtension() {
   if (typeof chrome !== 'undefined' && chrome.alarms) {
     chrome.alarms.create('service_recovery_alarm', { periodInMinutes: 0.5 });
     chrome.alarms.onAlarm.addListener((alarm) => {
-      if (alarm.name === 'service_recovery_alarm' && isServiceOffline) {
-        syncActiveContext();
+      if (alarm.name === 'service_recovery_alarm') {
+        recoveryTick();
       }
     });
   }

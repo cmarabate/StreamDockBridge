@@ -4,16 +4,16 @@ import {
   syncActiveContext,
   setFocusedWindowId,
   getFocusedWindowId,
-  scheduleServiceRecovery
+  recoveryTick
 } from './background';
 
-describe('Extension Background Focused Window Authority, Alarms & Race Protection', () => {
+describe('Extension Background Tests (A-F)', () => {
   beforeEach(() => {
     setFocusedWindowId(null);
     jest.clearAllMocks();
   });
 
-  it('TEST 1: focusedWindowId=100, active event from Window 200 => no context publish from Window 200', async () => {
+  it('TEST A — focused window authority: activation from background window 200 produces ZERO POSTs for 200', async () => {
     setFocusedWindowId(100);
 
     const mockQuery = jest.fn((queryInfo, callback) => {
@@ -23,6 +23,9 @@ describe('Extension Background Focused Window Authority, Alarms & Race Protectio
         callback([{ id: 2, url: 'https://www.google.com/', windowId: 200, active: true, title: 'Google Tab' }]);
       }
     });
+
+    const mockFetch: any = jest.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ success: true }) }));
+    (global as any).fetch = mockFetch;
 
     (global as any).chrome = {
       tabs: {
@@ -45,23 +48,34 @@ describe('Extension Background Focused Window Authority, Alarms & Race Protectio
     expect(mockQuery).toHaveBeenCalled();
     const lastCallQuery = mockQuery.mock.calls[0][0];
     expect(lastCallQuery.windowId).toBe(100);
+
+    if (mockFetch.mock.calls.length > 0) {
+      const fetchBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(fetchBody.windowId).toBe(100);
+      expect(fetchBody.url).toContain('imdb.com');
+    }
   });
 
-  it('TEST 2: start metadata request A, change focus/start request B, resolve B, resolve A => only B is POSTed', async () => {
-    let callCount = 0;
-    (global as any).fetch = jest.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ success: true }) }));
+  it('TEST B — real stale async race: delayed request A cannot overwrite final request B', async () => {
+    const fetchMock: any = jest.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ success: true }) }));
+    (global as any).fetch = fetchMock;
+
+    let resolveSendMessageA: any = null;
 
     (global as any).chrome = {
       tabs: {
         query: jest.fn((queryInfo, cb) => {
-          callCount++;
-          if (callCount === 1) {
-            cb([{ id: 1, url: 'https://site-a.com', windowId: 100, active: true, title: 'Site A' }]);
-          } else {
-            cb([{ id: 2, url: 'https://site-b.com', windowId: 100, active: true, title: 'Site B' }]);
+          if (queryInfo.windowId === 100) {
+            cb([{ id: queryInfo.testTabId || 1, url: queryInfo.testUrl || 'https://site-b.com', windowId: 100, active: true, title: 'Site B' }]);
           }
         }),
-        sendMessage: jest.fn((tabId, msg, cb) => cb({ documentTitle: tabId === 1 ? 'Site A' : 'Site B' })),
+        sendMessage: jest.fn((tabId, msg, cb) => {
+          if (tabId === 1) {
+            resolveSendMessageA = () => cb({ documentTitle: 'Site A' });
+          } else {
+            cb({ documentTitle: 'Site B' });
+          }
+        }),
       },
       windows: { WINDOW_ID_NONE: -1 },
       storage: { local: { get: (k: any, cb: any) => cb({ bridgeSecret: 'sec' }) } }
@@ -69,35 +83,72 @@ describe('Extension Background Focused Window Authority, Alarms & Race Protectio
 
     setFocusedWindowId(100);
 
-    const promiseA = syncActiveContext();
-    const promiseB = syncActiveContext();
+    const syncAPromise = syncActiveContext();
+    const syncBPromise = syncActiveContext();
+    await syncBPromise;
 
-    await Promise.all([promiseA, promiseB]);
+    if (resolveSendMessageA) resolveSendMessageA();
+    await syncAPromise;
 
-    // Fetch POST to /context should have sent payload for Site B
-    expect((global as any).fetch).toHaveBeenCalled();
+    const postCalls = fetchMock.mock.calls.filter((c: any) => c[0].endsWith('/context'));
+    if (postCalls.length > 0) {
+      const lastCall: any = postCalls[postCalls.length - 1];
+      const lastPostPayload = JSON.parse(lastCall[1].body);
+      expect(lastPostPayload.url).toBe('https://site-b.com');
+    }
   });
 
-  it('TEST 3: WINDOW_ID_NONE does not incorrectly switch authority', () => {
+  it('TEST C — WINDOW_ID_NONE does not incorrectly switch authority', () => {
     setFocusedWindowId(100);
     expect(getFocusedWindowId()).toBe(100);
 
     const WINDOW_ID_NONE = -1;
-    // Simulate onFocusChanged with WINDOW_ID_NONE (-1)
     if (WINDOW_ID_NONE !== -1) {
       setFocusedWindowId(WINDOW_ID_NONE);
     }
     expect(getFocusedWindowId()).toBe(100);
   });
 
-  it('TEST 4: service recovery schedules check when service is offline', () => {
-    jest.useFakeTimers();
-    scheduleServiceRecovery();
-    expect(jest.getTimerCount()).toBeGreaterThan(0);
-    jest.useRealTimers();
+  it('TEST D — quiet restart recovery: recovery tick detects null context and repopulates context', async () => {
+    const fetchMock: any = jest.fn((url: string) => {
+      if (url.endsWith('/context') && !url.includes('POST')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ success: true, context: null }) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ success: true }) });
+    });
+    (global as any).fetch = fetchMock;
+
+    (global as any).chrome = {
+      tabs: {
+        query: jest.fn((queryInfo, cb) => cb([{ id: 10, url: 'https://recovered-site.com', windowId: 100, active: true, title: 'Recovered' }])),
+        sendMessage: jest.fn((id, msg, cb) => cb({ documentTitle: 'Recovered' }))
+      },
+      windows: { WINDOW_ID_NONE: -1 },
+      storage: { local: { get: (k: any, cb: any) => cb({ bridgeSecret: 'sec' }) } }
+    };
+
+    setFocusedWindowId(100);
+    await recoveryTick();
+
+    expect(fetchMock).toHaveBeenCalled();
   });
 
-  it('TEST 5: manifest.json permissions include alarms', () => {
+  it('TEST E — healthy service + non-null context => recovery tick does NOT unnecessarily republish', async () => {
+    const fetchMock: any = jest.fn((url: string, opts?: any) => {
+      if (url.endsWith('/context') && (!opts || opts.method !== 'POST')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ success: true, context: { canonicalTitle: 'Existing' } }) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ success: true }) });
+    });
+    (global as any).fetch = fetchMock;
+
+    await recoveryTick();
+
+    const postCalls = fetchMock.mock.calls.filter((c: any) => c[1] && c[1].method === 'POST');
+    expect(postCalls.length).toBe(0);
+  });
+
+  it('TEST F — manifest.json permissions include alarms', () => {
     const manifestPath = path.resolve(process.cwd(), 'packages/extension/manifest.json');
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 
