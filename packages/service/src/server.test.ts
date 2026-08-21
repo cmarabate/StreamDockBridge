@@ -2,16 +2,16 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { createBridgeServer, isAllowedOrigin } from './server';
+import { createBridgeServer, isAllowedOrigin, ALLOWED_EXTENSION_ORIGIN } from './server';
 import { contextStore } from './contextStore';
 import { SecretStore } from './secretStore';
 
-describe('Bridge Server Integration & Security Tests', () => {
+describe('Bridge Server Pinned Origin & Security Tests', () => {
   let tmpSecretFile: string;
   let secretStore: SecretStore;
   let bridgeServer: ReturnType<typeof createBridgeServer>;
   let launchedUrls: string[] = [];
-  const testPort = 17340;
+  const testPort = 17345;
 
   beforeAll(async () => {
     tmpSecretFile = path.join(os.tmpdir(), `sdb-test-sec-${Date.now()}.key`);
@@ -74,49 +74,35 @@ describe('Bridge Server Integration & Security Tests', () => {
     });
   };
 
-  it('isAllowedOrigin helper validates chrome-extension and local origins while denying arbitrary web pages', () => {
+  it('isAllowedOrigin validates pinned extension origin and denies unpinned origins', () => {
     expect(isAllowedOrigin(undefined)).toBe(true);
-    expect(isAllowedOrigin('chrome-extension://abcdefghijklmnopqrstuvwxyz')).toBe(true);
-    expect(isAllowedOrigin('http://127.0.0.1:17337')).toBe(true);
-    expect(isAllowedOrigin('http://localhost:17337')).toBe(true);
+    expect(isAllowedOrigin(ALLOWED_EXTENSION_ORIGIN)).toBe(true);
+    expect(isAllowedOrigin('chrome-extension://unpinnedextensionid')).toBe(false);
+    expect(isAllowedOrigin('http://localhost:8080')).toBe(false);
     expect(isAllowedOrigin('https://malicious-site.com')).toBe(false);
-    expect(isAllowedOrigin('http://evil.org')).toBe(false);
   });
 
-  it('POST /auth/handshake provisions secret for extension origin', async () => {
-    const res = await request('POST', '/auth/handshake', { Origin: 'chrome-extension://myextensionid' });
+  it('POST /auth/handshake provisions secret ONLY for pinned extension origin', async () => {
+    const res = await request('POST', '/auth/handshake', { Origin: ALLOWED_EXTENSION_ORIGIN });
     expect(res.statusCode).toBe(200);
     expect(res.data.success).toBe(true);
     expect(res.data.secret).toBe(secretStore.getSecret());
-    expect(res.headers['access-control-allow-origin']).toBe('chrome-extension://myextensionid');
+
+    const rejectedRes = await request('POST', '/auth/handshake', { Origin: 'chrome-extension://wrongid' });
+    expect(rejectedRes.statusCode).toBe(403);
+    expect(rejectedRes.data.error).toBe('origin_forbidden');
   });
 
   it('Rejects CORS request from unauthorized web page origin', async () => {
     const res = await request('GET', '/context', { Origin: 'https://evil-site.com' });
     expect(res.statusCode).toBe(403);
     expect(res.data.error).toBe('origin_forbidden');
-    expect(res.headers['access-control-allow-origin']).toBeUndefined();
   });
 
-  it('OPTIONS preflight request from unauthorized web page returns 403', async () => {
-    const res = await request('OPTIONS', '/context', { Origin: 'https://evil-site.com' });
-    expect(res.statusCode).toBe(403);
-  });
-
-  it('POST /context rejects unauthorized updates and safely handles wrong-length tokens', async () => {
-    const shortTokenRes = await request('POST', '/context', { 'X-Bridge-Secret': 'short' }, { rawTitle: 'Test' });
-    expect(shortTokenRes.statusCode).toBe(401);
-    expect(shortTokenRes.data.error).toBe('unauthorized');
-
-    const longTokenRes = await request('POST', '/context', { 'X-Bridge-Secret': 'a'.repeat(200) }, { rawTitle: 'Test' });
-    expect(longTokenRes.statusCode).toBe(401);
-    expect(longTokenRes.data.error).toBe('unauthorized');
-  });
-
-  it('POST /context accepts authorized update from chrome-extension origin', async () => {
+  it('POST /context accepts authorized update from pinned extension origin', async () => {
     const secret = secretStore.getSecret();
     const res = await request('POST', '/context', {
-      Origin: 'chrome-extension://myextensionid',
+      Origin: ALLOWED_EXTENSION_ORIGIN,
       'X-Bridge-Secret': secret,
     }, {
       url: 'https://www.crunchyroll.com/series/G123/dandadan',

@@ -23,11 +23,12 @@ export async function getSecret(): Promise<string | null> {
       if (data.success && data.secret) {
         cachedSecret = data.secret;
         await new Promise<void>((resolve) => chrome.storage.local.set({ bridgeSecret: data.secret }, () => resolve()));
+        console.log('[StreamDockBridge Extension] Handshake success, secret provisioned.');
         return cachedSecret;
       }
     }
   } catch (e) {
-    // Handshake failed
+    console.error('[StreamDockBridge Extension] Handshake error:', e);
   }
 
   return null;
@@ -36,16 +37,19 @@ export async function getSecret(): Promise<string | null> {
 export async function syncActiveContext() {
   const currentSequence = ++latestSequenceId;
 
-  chrome.tabs.query({ active: true, lastFocusedWindow: true }, async (tabs) => {
-    let targetTab = (tabs && tabs.length > 0) ? tabs[0] : null;
+  chrome.tabs.query({ active: true }, async (tabs) => {
+    if (!tabs || tabs.length === 0) return;
+
+    let targetTab: chrome.tabs.Tab | null = null;
+    for (const tab of tabs) {
+      if (tab.url && (tab.url.startsWith('http://') || tab.url.startsWith('https://'))) {
+        targetTab = tab;
+        break;
+      }
+    }
 
     if (!targetTab) {
-      const allActive = await new Promise<chrome.tabs.Tab[]>((resolve) => {
-        chrome.tabs.query({ active: true }, (res) => resolve(res || []));
-      });
-      if (allActive && allActive.length > 0) {
-        targetTab = allActive[0];
-      }
+      targetTab = tabs[0];
     }
 
     if (!targetTab || !targetTab.id || !targetTab.url) return;
@@ -104,13 +108,14 @@ export async function syncActiveContext() {
     }
 
     try {
-      await fetch(`${SERVICE_URL}/context`, {
+      const res = await fetch(`${SERVICE_URL}/context`, {
         method: 'POST',
         headers,
         body: JSON.stringify(payload),
       });
+      console.log(`[StreamDockBridge Extension] POST /context status: ${res.status}`);
     } catch (e) {
-      // Service offline
+      console.error('[StreamDockBridge Extension] POST /context error:', e);
     }
   });
 }
@@ -122,10 +127,8 @@ if (typeof chrome !== 'undefined' && chrome.tabs) {
       syncActiveContext();
     }
   });
+  chrome.tabs.onCreated.addListener(() => syncActiveContext());
   chrome.windows.onFocusChanged.addListener(() => syncActiveContext());
   chrome.runtime.onStartup.addListener(() => syncActiveContext());
   chrome.runtime.onInstalled.addListener(() => syncActiveContext());
-
-  // Heartbeat sync
-  setInterval(() => syncActiveContext(), 2000);
 }

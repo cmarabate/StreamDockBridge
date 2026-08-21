@@ -11,6 +11,9 @@ import {
   buildRedditUrl,
 } from './launcher';
 
+export const ALLOWED_EXTENSION_ID = 'ldhiheiinaifckcfjmbmaaigdmknnpgi';
+export const ALLOWED_EXTENSION_ORIGIN = `chrome-extension://${ALLOWED_EXTENSION_ID}`;
+
 export interface ServerOptions {
   port?: number;
   host?: string;
@@ -19,10 +22,9 @@ export interface ServerOptions {
 }
 
 export function isAllowedOrigin(origin: string | undefined): boolean {
-  if (!origin) return true;
-  if (origin.startsWith('chrome-extension://')) return true;
-  if (/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin)) return true;
-  return false;
+  if (!origin) return true; // No Origin header (Node.js, curl, direct local processes)
+  if (origin === ALLOWED_EXTENSION_ORIGIN) return true; // Exact pinned Chrome Extension ID
+  return false; // Reject arbitrary extension IDs and web page origins
 }
 
 export function createBridgeServer(options: ServerOptions = {}) {
@@ -47,7 +49,6 @@ export function createBridgeServer(options: ServerOptions = {}) {
       setCorsHeaders();
       res.setHeader('Content-Type', 'application/json');
       res.statusCode = statusCode;
-      console.log(`[StreamDockBridge Service] ${req.method} ${req.url} -> ${statusCode}`);
       res.end(JSON.stringify(data));
     };
 
