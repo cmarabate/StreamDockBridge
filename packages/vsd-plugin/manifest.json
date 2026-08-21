@@ -1,0 +1,71 @@
+{
+  "Actions": [
+    {
+      "Icon": "images/imdb_icon",
+      "Name": "IMDb Search",
+      "States": [
+        {
+          "Image": "images/imdb_key"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Trigger IMDb search for current tab",
+      "UUID": "com.cmarabate.streamdock.streamdockbridge.imdb"
+    },
+    {
+      "Icon": "images/cast_icon",
+      "Name": "Cast Search",
+      "States": [
+        {
+          "Image": "images/cast_key"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Trigger Cast search for current tab",
+      "UUID": "com.cmarabate.streamdock.streamdockbridge.cast"
+    },
+    {
+      "Icon": "images/justwatch_icon",
+      "Name": "JustWatch Search",
+      "States": [
+        {
+          "Image": "images/justwatch_key"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Trigger JustWatch search for current tab",
+      "UUID": "com.cmarabate.streamdock.streamdockbridge.justwatch"
+    },
+    {
+      "Icon": "images/reddit_icon",
+      "Name": "Reddit Search",
+      "States": [
+        {
+          "Image": "images/reddit_key"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Trigger Reddit search for current tab",
+      "UUID": "com.cmarabate.streamdock.streamdockbridge.reddit"
+    }
+  ],
+  "Author": "cmarabate",
+  "Category": "StreamDockBridge",
+  "CategoryIcon": "images/category_icon",
+  "CodePathWin": "dist/main.js",
+  "Description": "StreamDockBridge Silent Localhost Transport Plugin",
+  "Name": "StreamDockBridge",
+  "Icon": "images/icon",
+  "Version": "1.0.0",
+  "URL": "https://github.com/cmarabate/StreamDockBridge",
+  "DefaultLocale": "en",
+  "OS": [
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    }
+  ],
+  "Nodejs": {
+    "Version": "20"
+  }
+}
