@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "build": "esbuild src/background.ts src/content.ts --bundle --platform=browser --target=chrome110 --outdir=dist && tsc -b",
+    "build": "tsc -b && esbuild src/background.ts src/content.ts --bundle --platform=browser --target=chrome110 --outdir=dist",
     "typecheck": "tsc -b --noEmit"
   },
   "devDependencies": {

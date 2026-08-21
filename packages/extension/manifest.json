@@ -5,6 +5,7 @@
   "description": "Provides current active tab context to local StreamDockBridge service.",
   "permissions": [
     "tabs",
+    "activeTab",
     "storage",
     "alarms"
   ],
