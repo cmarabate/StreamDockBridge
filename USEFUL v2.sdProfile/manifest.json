@@ -1,7 +1,7 @@
 {
     "Actions": {
         "0,1": {
-            "ActionID": "da3e459d-0807-4407-b840-95e8685e677b",
+            "ActionID": "0bc1b79f-d556-430b-bc9a-46b5d82136a1",
             "Controller": "Keypad",
             "Name": "AUDIO FIX",
             "Settings": {
@@ -22,25 +22,26 @@
             "UUID": "com.lizard.switchaudio.toggle"
         },
         "1,1": {
-            "ActionID": "3c81b49a-d3bd-40b2-bb71-fe986fb7c9f0",
+            "ActionID": "0ed93f89-d6ad-4d95-b586-6addaa0b7e0a",
             "Controller": "Keypad",
             "Name": "RECORD",
             "Settings": {},
-            "State": 0,
+            "SoftwareSettings": {},
+            "State": 1,
             "States": [
                 {
-                    "Image": "Images/record_on.png",
+                    "Image": "Images/actions/record/on.png",
                     "Name": "Start"
                 },
                 {
-                    "Image": "Images/record_off.png",
+                    "Image": "Images/actions/record/off.png",
                     "Name": "Stop"
                 }
             ],
             "UUID": "com.hotspot.streamdock.obsstudio.record"
         },
         "2,1": {
-            "ActionID": "c9749978-ee2d-407d-a1f3-44cb92e15ca3",
+            "ActionID": "6cedb692-2b2a-4aec-8b69-bfd04f3350d9",
             "Controller": "Keypad",
             "Name": "IMDb",
             "Settings": {},
@@ -56,7 +57,7 @@
             "UUID": "com.cmarabate.streamdock.streamdockbridge.imdb"
         },
         "3,1": {
-            "ActionID": "1b134c5f-5a2b-4c13-a863-7eeb87e031e0",
+            "ActionID": "915910a4-889b-4c5a-ad35-71809264563c",
             "Controller": "Keypad",
             "Name": "CAST",
             "Settings": {},
@@ -72,7 +73,7 @@
             "UUID": "com.cmarabate.streamdock.streamdockbridge.cast"
         },
         "4,1": {
-            "ActionID": "8dd31bb2-0885-449c-b167-e92d636738cf",
+            "ActionID": "a2c5e674-cc41-4fa3-a193-0d5cbf95f777",
             "Controller": "Keypad",
             "Name": "JUSTWATCH",
             "Settings": {},
@@ -88,7 +89,7 @@
             "UUID": "com.cmarabate.streamdock.streamdockbridge.justwatch"
         },
         "0,2": {
-            "ActionID": "d118772e-f404-49e0-94be-9aa848a825f3",
+            "ActionID": "3f3b9d40-0fcd-4217-a08c-712b9f14e054",
             "Controller": "Keypad",
             "Name": "REDDIT",
             "Settings": {},
@@ -104,13 +105,18 @@
             "UUID": "com.cmarabate.streamdock.streamdockbridge.reddit"
         }
     },
+    "AppIdentifier": "",
+    "AppIdentifier0": "",
+    "AppIdentifier1": "",
+    "AppIdentifier2": "",
     "DeviceModel": "20GBA9901",
+    "DeviceSerialNumber": "01E2D2782F04",
     "DeviceUUID": "VSDN4Pro",
     "Name": "USEFUL v2",
     "Pages": {
-        "Current": "manifest.json",
+        "Current": "097635CA-2763-46C3-9426-2624F25805FD.sdProfile",
         "Pages": [
-            "manifest.json"
+            "097635CA-2763-46C3-9426-2624F25805FD.sdProfile"
         ]
     },
     "Version": "1.0"

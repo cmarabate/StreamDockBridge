@@ -25,7 +25,10 @@ export class SecretStore {
   }
 
   public verifySecret(token: string | undefined): boolean {
-    if (!token) return false;
-    return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(this.secret));
+    if (!token || typeof token !== 'string') return false;
+    const tokenBuf = Buffer.from(token);
+    const secretBuf = Buffer.from(this.secret);
+    if (tokenBuf.length !== secretBuf.length) return false;
+    return crypto.timingSafeEqual(tokenBuf, secretBuf);
   }
 }

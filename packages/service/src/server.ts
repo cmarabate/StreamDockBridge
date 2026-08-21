@@ -18,6 +18,13 @@ export interface ServerOptions {
   launcher?: LauncherFn;
 }
 
+export function isAllowedOrigin(origin: string | undefined): boolean {
+  if (!origin) return true;
+  if (origin.startsWith('chrome-extension://')) return true;
+  if (/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin)) return true;
+  return false;
+}
+
 export function createBridgeServer(options: ServerOptions = {}) {
   const port = options.port || 17337;
   const host = options.host || '127.0.0.1';
@@ -25,22 +32,33 @@ export function createBridgeServer(options: ServerOptions = {}) {
   const launcher = options.launcher || defaultSystemLauncher;
 
   const server = http.createServer(async (req, res) => {
+    const origin = req.headers['origin'] as string | undefined;
+
+    const setCorsHeaders = () => {
+      if (!origin || isAllowedOrigin(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin || '*');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Bridge-Secret, Authorization, Access-Control-Request-Private-Network');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        res.setHeader('Access-Control-Allow-Private-Network', 'true');
+      }
+    };
+
     const sendJson = (statusCode: number, data: any) => {
-      res.writeHead(statusCode, {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Content-Type, X-Bridge-Secret, Authorization',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      });
+      setCorsHeaders();
+      res.setHeader('Content-Type', 'application/json');
+      res.statusCode = statusCode;
+      console.log(`[StreamDockBridge Service] ${req.method} ${req.url} -> ${statusCode}`);
       res.end(JSON.stringify(data));
     };
 
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Content-Type, X-Bridge-Secret, Authorization',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      });
+      if (origin && !isAllowedOrigin(origin)) {
+        res.statusCode = 403;
+        res.end();
+        return;
+      }
+      setCorsHeaders();
+      res.statusCode = 204;
       res.end();
       return;
     }
@@ -48,19 +66,26 @@ export function createBridgeServer(options: ServerOptions = {}) {
     const url = new URL(req.url || '/', `http://${req.headers.host || '127.0.0.1'}`);
     const pathname = url.pathname;
 
-    // GET /health
+    if (origin && !isAllowedOrigin(origin)) {
+      sendJson(403, { success: false, error: 'origin_forbidden' });
+      return;
+    }
+
     if (req.method === 'GET' && pathname === '/health') {
       sendJson(200, { status: 'ok', service: 'StreamDockBridge' });
       return;
     }
 
-    // GET /context
     if (req.method === 'GET' && pathname === '/context') {
       sendJson(200, { success: true, context: contextStore.getContext() });
       return;
     }
 
-    // POST /context
+    if (req.method === 'POST' && pathname === '/auth/handshake') {
+      sendJson(200, { success: true, secret: secretStore.getSecret() });
+      return;
+    }
+
     if (req.method === 'POST' && pathname === '/context') {
       const authHeader = req.headers['x-bridge-secret'] || req.headers['authorization']?.replace(/^Bearer\s+/i, '');
       if (!secretStore.verifySecret(authHeader as string | undefined)) {
@@ -105,7 +130,6 @@ export function createBridgeServer(options: ServerOptions = {}) {
       return;
     }
 
-    // POST /lookup/:action
     if (req.method === 'POST' && pathname.startsWith('/lookup/')) {
       const action = pathname.replace('/lookup/', '').toLowerCase();
       const current = contextStore.getContext();
@@ -139,7 +163,6 @@ export function createBridgeServer(options: ServerOptions = {}) {
       return;
     }
 
-    // Reject GET for actions or unknown paths
     if (pathname.startsWith('/lookup/')) {
       sendJson(405, { success: false, error: 'method_not_allowed' });
       return;
