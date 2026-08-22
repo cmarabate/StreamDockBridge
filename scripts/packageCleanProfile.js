@@ -1,11 +1,6 @@
 ﻿const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 const { execSync } = require('child_process');
-
-function generateActionId() {
-  return crypto.randomUUID().toLowerCase();
-}
 
 const targetProfileDir = path.join(process.cwd(), 'USEFUL v2.sdProfile');
 
@@ -15,7 +10,15 @@ if (fs.existsSync(targetProfileDir)) {
 }
 fs.mkdirSync(targetProfileDir, { recursive: true });
 
-const childProfileRelPath = '097635CA-2763-46C3-9426-2624F25805FD.sdProfile';
+// This page UUID must never collide with a page UUID VSD Craft already has
+// cached locally under %APPDATA%\HotSpot\StreamDock\profiles\<UUID>.sdProfile
+// — the previous UUID (097635CA-2763-46C3-9426-2624F25805FD) collided with a
+// stale local profile still holding the old generic Website/localhost
+// actions, and VSD Craft appears to key its local profile store by that page
+// UUID: importing a package whose UUID it already has locally reveals the
+// stale cached content instead of the newly imported one. Regenerate a fresh
+// UUID (rather than reusing this one) if this ever collides again.
+const childProfileRelPath = 'F06684D5-1B0A-4D3B-8806-C74ED23C3C11.sdProfile';
 const targetChildDir = path.join(targetProfileDir, 'profiles', childProfileRelPath);
 fs.mkdirSync(targetChildDir, { recursive: true });
 
@@ -67,7 +70,7 @@ fs.writeFileSync(path.join(targetProfileDir, 'manifest.json'), JSON.stringify(to
 const childManifest = {
   Actions: {
     '0,1': {
-      ActionID: generateActionId(),
+      ActionID: '47541a7c-2d7d-4339-937e-d91908473a0a',
       Controller: 'Keypad',
       Name: 'AUDIO FIX',
       Settings: {
@@ -88,7 +91,7 @@ const childManifest = {
       UUID: 'com.lizard.switchaudio.toggle'
     },
     '1,1': {
-      ActionID: generateActionId(),
+      ActionID: '7eae3711-18bf-4745-a5a0-279a93cbb09d',
       Controller: 'Keypad',
       Name: 'RECORD',
       Settings: {},
@@ -107,7 +110,7 @@ const childManifest = {
       UUID: 'com.hotspot.streamdock.obsstudio.record'
     },
     '2,1': {
-      ActionID: generateActionId(),
+      ActionID: '99f7511a-35c1-444a-9b02-7a243af7eb49',
       Controller: 'Keypad',
       Name: 'IMDb',
       Settings: {},
@@ -123,7 +126,7 @@ const childManifest = {
       UUID: 'com.cmarabate.streamdock.streamdockbridge.imdb'
     },
     '3,1': {
-      ActionID: generateActionId(),
+      ActionID: '71394053-f83d-47a6-9161-e4b09122774c',
       Controller: 'Keypad',
       Name: 'CAST',
       Settings: {},
@@ -139,7 +142,7 @@ const childManifest = {
       UUID: 'com.cmarabate.streamdock.streamdockbridge.cast'
     },
     '4,1': {
-      ActionID: generateActionId(),
+      ActionID: '4481faca-8655-4b9e-bcb7-77d1a3b4dcab',
       Controller: 'Keypad',
       Name: 'JUSTWATCH',
       Settings: {},
@@ -155,7 +158,7 @@ const childManifest = {
       UUID: 'com.cmarabate.streamdock.streamdockbridge.justwatch'
     },
     '0,2': {
-      ActionID: generateActionId(),
+      ActionID: '438af019-6283-4406-a55c-1d27ee7210ff',
       Controller: 'Keypad',
       Name: 'REDDIT',
       Settings: {},
@@ -177,11 +180,27 @@ const childManifest = {
 fs.writeFileSync(path.join(targetChildDir, 'manifest.json'), JSON.stringify(childManifest, null, 4), 'utf8');
 
 // Package single canonical import artifact USEFUL v2.StreamDockProfile
-if (fs.existsSync('USEFUL v2.StreamDockProfile')) fs.unlinkSync('USEFUL v2.StreamDockProfile');
-if (fs.existsSync('USEFUL v2.sdProfile.zip')) fs.unlinkSync('USEFUL v2.sdProfile.zip');
+//
+// PowerShell's Compress-Archive was used here previously and is the reason
+// VSD Craft could not read the package: it (a) mixes backslash and forward-
+// slash separators in entry names for top-level wildcard-matched items, and
+// (b) omits explicit directory entries for nested folders. A genuine VSD
+// Craft export (see defaultData/defaultProfiles/*.streamDockProfile) always
+// writes an explicit forward-slash entry for every directory level. Windows'
+// built-in bsdtar (System32\tar.exe, libarchive) reproduces that exactly, so
+// use it instead of Compress-Archive — no new dependency required.
+const targetArtifact = 'USEFUL v2.StreamDockProfile';
+const staleZipVariant = 'USEFUL v2.sdProfile.zip'; // obsolete Compress-Archive intermediate; never write one again
+if (fs.existsSync(targetArtifact)) fs.unlinkSync(targetArtifact);
+if (fs.existsSync(staleZipVariant)) fs.unlinkSync(staleZipVariant);
 
-execSync('powershell "Compress-Archive -Path \'USEFUL v2.sdProfile\\*\' -DestinationPath \'USEFUL v2.sdProfile.zip\' -Force"', { stdio: 'inherit' });
-fs.copyFileSync('USEFUL v2.sdProfile.zip', 'USEFUL v2.StreamDockProfile');
-fs.unlinkSync('USEFUL v2.sdProfile.zip');
+const bsdtar = 'C:\\Windows\\System32\\tar.exe';
+if (!fs.existsSync(bsdtar)) {
+  throw new Error(`bsdtar not found at ${bsdtar} — required to package a VSD-Craft-compatible archive.`);
+}
+execSync(
+  `"${bsdtar}" --format=zip -c -f "${targetArtifact}" -C "USEFUL v2.sdProfile" Images manifest.json profiles`,
+  { stdio: 'inherit' }
+);
 
 console.log('Successfully created clean USEFUL v2 profile package & single canonical USEFUL v2.StreamDockProfile import artifact!');
