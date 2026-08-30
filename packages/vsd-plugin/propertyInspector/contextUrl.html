@@ -41,6 +41,21 @@
         outline: none;
         border-color: var(--accent);
       }
+      select {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 7px 8px;
+        margin-bottom: 12px;
+        background: var(--field);
+        color: var(--fg);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        font: inherit;
+      }
+      select:focus {
+        outline: none;
+        border-color: var(--accent);
+      }
       input.invalid {
         border-color: var(--bad);
       }
@@ -149,6 +164,11 @@
     </style>
   </head>
   <body>
+    <label for="preset">Preset</label>
+    <select id="preset">
+      <option value="">Custom</option>
+    </select>
+
     <label for="urlTemplate">URL Template</label>
     <input
       id="urlTemplate"
@@ -191,6 +211,32 @@
     <script>
       var PLACEHOLDERS = ['title', 'rawTitle', 'url', 'hostname'];
 
+      /**
+       * Mirrors CONTEXT_URL_PRESETS in the service. A preset is only sugar:
+       * choosing one writes a normal urlTemplate, and nothing at run time reads
+       * presetId. A test asserts this list matches the service exactly, so the
+       * two cannot drift.
+       */
+      var PRESETS = [
+        { id: "imdb", label: "IMDb", group: "Media", urlTemplate: "https://www.imdb.com/find?q={title}" },
+        { id: "trailer", label: "Trailer", group: "Media", urlTemplate: "https://www.youtube.com/results?search_query={title}+trailer" },
+        { id: "rotten-tomatoes", label: "Rotten Tomatoes", group: "Media", urlTemplate: "https://www.rottentomatoes.com/search?search={title}" },
+        { id: "metacritic", label: "Metacritic", group: "Media", urlTemplate: "https://www.metacritic.com/search/{title}/" },
+        { id: "letterboxd", label: "Letterboxd", group: "Media", urlTemplate: "https://letterboxd.com/search/{title}/" },
+        { id: "tmdb", label: "TMDB", group: "Media", urlTemplate: "https://www.themoviedb.org/search?query={title}" },
+        { id: "reelgood", label: "ReelGood", group: "Media", urlTemplate: "https://reelgood.com/search?q={title}" },
+        { id: "justwatch", label: "JustWatch", group: "Media", urlTemplate: "https://www.justwatch.com/us/search?q={title}" },
+        { id: "reddit", label: "Reddit", group: "Media", urlTemplate: "https://www.reddit.com/search/?q={title}" },
+        { id: "wikipedia", label: "Wikipedia", group: "Media", urlTemplate: "https://en.wikipedia.org/w/index.php?search={title}" },
+        { id: "cast", label: "Cast", group: "Media", urlTemplate: "https://www.google.com/search?q={title}%20cast" },
+        { id: "soundtrack", label: "Soundtrack", group: "Media", urlTemplate: "https://www.google.com/search?q={title}%20soundtrack" },
+        { id: "ending-explained", label: "Ending explained", group: "Media", urlTemplate: "https://www.google.com/search?q={title}%20ending%20explained" },
+        { id: "search-page-title", label: "Google this page title", group: "This page", urlTemplate: "https://www.google.com/search?q={rawTitle}" },
+        { id: "reddit-page-title", label: "Reddit this page title", group: "This page", urlTemplate: "https://www.reddit.com/search/?q={rawTitle}" },
+        { id: "youtube-page-title", label: "YouTube this page title", group: "This page", urlTemplate: "https://www.youtube.com/results?search_query={rawTitle}" },
+      ];
+      var PRESET_GROUPS = ['Media', 'This page'];
+
       var websocket = null;
       var pluginUUID = null;
       var actionUUID = null;
@@ -205,6 +251,37 @@
       var iconStatusEl = document.getElementById('iconStatus');
       var previewEl = document.getElementById('preview');
       var refreshEl = document.getElementById('refresh');
+      var presetEl = document.getElementById('preset');
+
+      /** Populate the selector, grouped, from the catalog above. */
+      (function buildPresetOptions() {
+        PRESET_GROUPS.forEach(function (group) {
+          var optgroup = document.createElement('optgroup');
+          optgroup.label = group;
+          PRESETS.filter(function (p) { return p.group === group; }).forEach(function (p) {
+            var option = document.createElement('option');
+            option.value = p.id;
+            option.textContent = p.label;
+            optgroup.appendChild(option);
+          });
+          presetEl.appendChild(optgroup);
+        });
+      })();
+
+      function presetById(id) {
+        for (var i = 0; i < PRESETS.length; i++) if (PRESETS[i].id === id) return PRESETS[i];
+        return null;
+      }
+
+      /**
+       * Which preset the current template matches, or '' for Custom. Derived from
+       * the template itself rather than trusted from settings, so a template the
+       * owner has since edited correctly shows as Custom.
+       */
+      function presetIdForTemplate(template) {
+        for (var i = 0; i < PRESETS.length; i++) if (PRESETS[i].urlTemplate === template) return PRESETS[i].id;
+        return '';
+      }
 
       function setStatus(text, kind) {
         statusEl.textContent = text;
@@ -373,6 +450,14 @@
         if (!validate()) return;
         settings.urlTemplate = input.value;
         settings.autoWebsiteIcon = autoIconEl.checked;
+        /**
+         * Provenance only. Derived from the template, never the other way round,
+         * so an edited preset stops claiming to be one. The runtime never reads it.
+         */
+        var matched = presetIdForTemplate(input.value);
+        if (matched) settings.presetId = matched;
+        else delete settings.presetId;
+        presetEl.value = matched;
         if (websocket && websocket.readyState === 1) {
           // Settings go out at payload ROOT; they come back under payload.settings.
           websocket.send(
@@ -410,6 +495,7 @@
 
       input.addEventListener('input', function () {
         userEdited = true;
+        presetEl.value = presetIdForTemplate(input.value);
         validate();
         renderLocalState();
         clearTimeout(saveTimer);
@@ -421,6 +507,20 @@
       input.addEventListener('change', function () {
         userEdited = true;
         validate();
+        clearTimeout(saveTimer);
+        var changed = siteChanged();
+        save(changed ? refreshIconState : null);
+      });
+
+      presetEl.addEventListener('change', function () {
+        var preset = presetById(presetEl.value);
+        // 'Custom' is a label for 'whatever is already there', not an action:
+        // selecting it must never wipe the template the owner has typed.
+        if (!preset) return;
+        userEdited = true;
+        input.value = preset.urlTemplate;
+        validate();
+        renderLocalState();
         clearTimeout(saveTimer);
         var changed = siteChanged();
         save(changed ? refreshIconState : null);
@@ -445,6 +545,7 @@
         input.value = typeof settings.urlTemplate === 'string' ? settings.urlTemplate : '';
         // Absent means ON: the setting is opt-out, so existing keys inherit it.
         autoIconEl.checked = settings.autoWebsiteIcon !== false;
+        presetEl.value = presetIdForTemplate(input.value);
         if (input.value) validate();
         else setStatus('');
         lastSite = null;

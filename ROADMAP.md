@@ -646,6 +646,46 @@ mechanism, and a missing key defaults to visible, so it must be set explicitly.
 Verified after a host restart: the profile still holds 7 Context URL bindings and 0 legacy
 bindings, so VSD Craft accepted the migration rather than rewriting it.
 
+### Context URL preset library — `DONE` / `VERIFIED AUTOMATED` / `WAITING RUNTIME + PHYSICAL TESTING`
+
+Creating a common key should be easier than typing a URL. The Property Inspector gains an
+optional **Preset** selector above the template field, grouped **Media** and **This page**,
+with **Custom** as the default.
+
+**A preset is sugar, and structurally cannot become anything else.** Choosing one writes a
+normal `urlTemplate` into the key's settings and nothing more; the runtime executes that
+template exactly as it would a hand-typed one. `presetId` is recorded only as provenance,
+is *derived from* the template rather than the reverse, and is deleted the moment the
+template stops matching — so an edited preset correctly falls back to Custom. Nothing in
+the service or the plugin reads it. That is deliberate: the moment the runtime branched on
+a preset id we would be hard-coding behaviour per site again, which is the thing Context
+URL replaced.
+
+**16 presets, every URL requested against the real site before being added:**
+
+| Media | This page |
+| --- | --- |
+| IMDb · Trailer · Rotten Tomatoes · Metacritic · Letterboxd · TMDB · ReelGood · JustWatch · Reddit · Wikipedia · Cast · Soundtrack · Ending explained | Google this page title · Reddit this page title · YouTube this page title |
+
+The four migrated built-ins appear as presets with their destinations byte-identical,
+CAST's literal `%20` included.
+
+**Project presets are deliberately absent.** GitHub / Vercel / Supabase presets need
+project placeholders that do not exist yet, and shipping a preset that always fails would
+be worse than not shipping it. See the project-context section below.
+
+**One catalog, one guard.** The panel is a `file://` page and cannot import the service
+module, so it carries its own copy. A test parses the copy out of the HTML and asserts it
+equals the service catalog exactly, in order, so the two cannot drift. Further tests assert
+every preset resolves to a valid http(s) URL against a real context, that Auto Website Icon
+can derive a static origin for each one, that only approved placeholders are used, and that
+the panel always writes `urlTemplate` and treats `presetId` as provenance only.
+
+**Not yet seen running.** The preset selector has automated and structural verification but
+has not been exercised in the live Property Inspector — the workstation was in active use
+and the host window could not be driven reliably. Runtime and physical confirmation are
+outstanding.
+
 ### Phase 2B — AgentOS Safe Hardware-Action Contract — `PLANNED` (design agreed, not implemented)
 
 No button is wired to AgentOS. This section is the contract that must hold before one is.
