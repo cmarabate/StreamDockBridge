@@ -130,7 +130,7 @@ mirror. It offers no capability the incumbent SDK lacks.
 Its only other local surfaces are a native host that terminates processes by port, and an
 optional Python transcription service that is not running.
 
-### Phase 2A — Transcribe Current Video — `PLANNED`
+### Phase 2A — Transcribe Current Video — `VERIFIED AUTOMATED` + `VERIFIED RUNTIME` / `WAITING PHYSICAL TESTING`
 
 One capability: send the currently focused browser URL to TranscriptForge for
 transcription, and report the outcome on the button.
@@ -149,6 +149,58 @@ N4 keyDown
 The caller supplies no URL, no path, and no method. The service reads the current URL
 from its existing browser-context authority and may reach exactly one downstream
 capability. TranscriptForge's destructive routes are never reachable from the device.
+
+Service route: `POST /actions/transcribe-current`, behind the same `X-Bridge-Secret`
+gate as `POST /context`. The adapter's entire downstream surface is the literal union
+`'/api/runtime/identity' | '/api/jobs'`, so a caller-chosen path is not representable.
+
+Verified TranscriptForge contracts used (read from deployed source at
+`D:\_Dev\_runtime\TranscriptForge`, which is a worktree of the dev repo and
+content-identical to it):
+
+- `GET /api/runtime/identity` → `{app, protocolVersion, appVersion, worker:{status}}`.
+  `worker.status` is one of `healthy | stale | none`; `healthy` means an unexpired
+  worker lease (20 s TTL). This route asserts a loopback `Host` header — it must name
+  `127.0.0.1` exactly, so `localhost` returns 403.
+- `POST /api/jobs` with `{urls:[url]}` → always **200** with
+  `{results:[{url, jobId, skippedReason}]}`. The discriminator is `skippedReason`, not
+  `jobId`: a deduplicated submission returns a **non-null** `jobId` alongside a non-null
+  `skippedReason`. Dedupe matches the normalized URL and excludes only `failed` and
+  `cancelled`, so a `complete` job also suppresses re-enqueue. This route has no auth,
+  no origin check and no loopback assertion.
+
+| Behaviour | Status |
+| --- | --- |
+| Unauthenticated / wrong secret rejected before any downstream call | `VERIFIED AUTOMATED` + `VERIFIED RUNTIME` (live 401) |
+| Disallowed origin rejected | `VERIFIED AUTOMATED` |
+| No browser context → `400 no_usable_context` | `VERIFIED AUTOMATED` |
+| Unsupported context URL → `400 unsupported_context_url` | `VERIFIED AUTOMATED` + `VERIFIED RUNTIME` (live 400 on a real page) |
+| Unhealthy/stale worker refuses to enqueue | `VERIFIED AUTOMATED` |
+| Downstream unreachable → `503 downstream_unavailable` | `VERIFIED AUTOMATED` |
+| Successful enqueue → `queued` + jobId | `VERIFIED AUTOMATED` |
+| Deduplicated enqueue → `already_queued` + existing jobId | `VERIFIED AUTOMATED` + `VERIFIED RUNTIME` (live, created no row) |
+| Downstream error normalized, response shape not leaked | `VERIFIED AUTOMATED` |
+| Caller cannot select downstream URL, path or method | `VERIFIED AUTOMATED` |
+| VSD `showOk` / `showAlert` / `setTitle` feedback | `VERIFIED AUTOMATED` |
+| **N4 Pro physical press** | **`WAITING PHYSICAL TESTING`** |
+
+#### URL admission mirrors the downstream provider registry
+
+TranscriptForge accepts any syntactically valid URL and only fails later, in the worker.
+Runtime validation proved this the hard way: submitting an ordinary streaming page
+enqueued a job that died with `No provider registered for platform "unknown"`
+(`failure_code: no_provider`, non-retryable) and left a dead row behind. The bridge
+therefore admits only URLs TranscriptForge has a provider for — YouTube, TikTok, Pocket
+Casts, and podcast feeds / direct audio files. Instagram, X and Facebook are excluded
+because TranscriptForge lists them in `RECOGNIZED_UNSUPPORTED_PLATFORMS`. This list
+mirrors downstream behaviour and must be widened if TranscriptForge gains providers.
+
+#### Deployment note
+
+The plugin exposes the new action, but `USEFUL v2.StreamDockProfile` was intentionally
+left unchanged so the pending Browser Context MVP canary still tests the same artifact.
+The button is added by dragging **StreamDockBridge → Transcribe Current Video** onto a
+free key in VSD Craft.
 
 ### Phase 2B — AgentOS Safe Hardware-Action Contract — `INVESTIGATION`
 

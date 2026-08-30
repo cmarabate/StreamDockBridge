@@ -1,5 +1,6 @@
 ﻿import WebSocket from 'ws';
 import { handlePluginKeyDown } from './pluginHandler';
+import { createTitleFeedback } from './titleFeedback';
 
 let ws: WebSocket | null = null;
 
@@ -16,6 +17,24 @@ function sendAlert(context: string) {
   });
 }
 
+function showOk(context: string) {
+  send({
+    event: 'showOk',
+    context,
+  });
+}
+
+function setTitle(context: string, title: string) {
+  // target 0 = hardware and software.
+  send({
+    event: 'setTitle',
+    context,
+    payload: { title, target: 0 },
+  });
+}
+
+const titleFeedback = createTitleFeedback(setTitle);
+
 async function handleMessage(msgStr: string) {
   try {
     const data = JSON.parse(msgStr);
@@ -23,7 +42,17 @@ async function handleMessage(msgStr: string) {
 
     if (event === 'keyDown') {
       const actionUuid = action || '';
-      await handlePluginKeyDown(context, actionUuid, undefined, sendAlert);
+      const result = await handlePluginKeyDown(context, actionUuid, undefined, sendAlert);
+
+      // handlePluginKeyDown already alerts on failure; success feedback is ours.
+      if (result.route === 'transcribe') {
+        if (result.success) {
+          showOk(context);
+          titleFeedback.flash(context, result.state === 'already_queued' ? 'Already\nqueued' : 'Queued');
+        } else {
+          titleFeedback.clearHeld(context);
+        }
+      }
     }
   } catch (e) {
     // Ignore invalid message JSON

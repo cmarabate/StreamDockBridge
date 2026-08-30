@@ -47,6 +47,18 @@
       "SupportedInMultiActions": true,
       "Tooltip": "Trigger Reddit search for current tab",
       "UUID": "com.cmarabate.streamdock.streamdockbridge.reddit"
+    },
+    {
+      "Icon": "images/icon",
+      "Name": "Transcribe Current Video",
+      "States": [
+        {
+          "Image": "images/icon"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Send the current tab to TranscriptForge for transcription",
+      "UUID": "com.cmarabate.streamdock.streamdockbridge.transcribe"
     }
   ],
   "Author": "cmarabate",

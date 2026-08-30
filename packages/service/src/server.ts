@@ -4,6 +4,11 @@ import { SecretStore } from './secretStore';
 import { contextStore, ContextRecord } from './contextStore';
 import { deriveCanonicalTitle } from './titleCleaner';
 import { exec } from 'child_process';
+import {
+  enqueueTranscription,
+  isSupportedTranscriptionUrl,
+  DownstreamRequester,
+} from './transcriptForge';
 
 export interface BridgeServerOptions {
   port?: number;
@@ -11,6 +16,7 @@ export interface BridgeServerOptions {
   allowAnyExtensionOrigin?: boolean;
   secretStore?: SecretStore;
   launcher?: (url: string) => void;
+  transcriptForgeRequester?: DownstreamRequester;
 }
 
 export const PINNED_EXTENSION_ORIGIN = 'chrome-extension://ldhiheiinaifckcfjmbmaaigdmknnpgi';
@@ -37,6 +43,7 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
   const port = options.port ?? 17337;
   const host = options.host ?? '127.0.0.1';
   const allowAnyExtension = options.allowAnyExtensionOrigin ?? false;
+  const transcriptForgeRequester = options.transcriptForgeRequester;
 
   const secretStore = options.secretStore ?? new SecretStore();
 
@@ -176,6 +183,72 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
 
     if (req.method === 'POST' && pathname === '/lookup/reddit') {
       handleLookup('reddit', (q) => `https://www.reddit.com/search/?q=${q}`);
+      return;
+    }
+
+    /**
+     * Transcribe the page the browser is currently on.
+     *
+     * Unlike /lookup/*, this reaches a downstream system that persists state, so
+     * it sits behind the same secret gate as POST /context. The device supplies
+     * no URL, path or method — the target comes from this service's own browser
+     * context authority, and the adapter's downstream surface is closed.
+     */
+    if (req.method === 'POST' && pathname === '/actions/transcribe-current') {
+      if (!isAllowedOrigin(origin, allowAnyExtension)) {
+        sendJson(403, { success: false, error: 'origin_forbidden' });
+        return;
+      }
+
+      const clientSecret = req.headers['x-bridge-secret'];
+      if (!secretStore.verifySecret(clientSecret as string | undefined)) {
+        sendJson(401, { success: false, error: 'unauthorized' });
+        return;
+      }
+
+      // Only the URL matters here, so read the record directly rather than
+      // through getContext(), which also demands a derivable title.
+      const current = contextStore.getCurrentRecord();
+      if (!current || !current.url) {
+        sendJson(400, { success: false, error: 'no_usable_context' });
+        return;
+      }
+
+      if (!isSupportedTranscriptionUrl(current.url)) {
+        sendJson(400, { success: false, error: 'unsupported_context_url' });
+        return;
+      }
+
+      const title = current.canonicalTitle;
+
+      // This route takes no input, so drain any body rather than leaving the
+      // request unconsumed on a keep-alive socket.
+      req.resume();
+
+      enqueueTranscription(current.url, transcriptForgeRequester)
+        .then((outcome) => {
+          if (!outcome.success) {
+            sendJson(outcome.status, { success: false, error: outcome.error });
+            return;
+          }
+          // A normalized shape, not TranscriptForge's. jobId is passed through
+          // for operator diagnostics; the plugin renders only success + state.
+          sendJson(200, {
+            success: true,
+            action: 'transcribe-current',
+            state: outcome.state,
+            jobId: outcome.jobId,
+            title,
+          });
+        })
+        // Trailing catch, not .then's second argument, so a throw inside the
+        // success handler cannot become an unhandled rejection and take down a
+        // long-running service. headersSent guards against a double send.
+        .catch(() => {
+          if (!res.headersSent) {
+            sendJson(503, { success: false, error: 'downstream_unavailable' });
+          }
+        });
       return;
     }
 

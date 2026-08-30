@@ -37,6 +37,18 @@ export class ContextStore {
     return this.current;
   }
 
+  /**
+   * The stored record regardless of whether a title was derivable.
+   *
+   * getContext() requires a canonicalTitle because the lookup actions search on
+   * it. Actions that only need the URL must not inherit that requirement — a
+   * page with no usable title (a direct .mp4, a bare player, a title the
+   * cleaner strips to empty) still has a perfectly transcribable URL.
+   */
+  public getCurrentRecord(): ContextRecord | null {
+    return this.current;
+  }
+
   public clear(): void {
     this.current = null;
   }
