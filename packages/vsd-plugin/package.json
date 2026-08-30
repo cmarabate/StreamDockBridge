@@ -4,7 +4,7 @@
   "private": true,
   "main": "dist/main.js",
   "scripts": {
-    "build": "esbuild src/main.ts --bundle --platform=node --target=node18 --outfile=dist/main.js && tsc -b",
+    "build": "tsc -b && esbuild src/main.ts --bundle --platform=node --target=node18 --outfile=dist/main.js",
     "typecheck": "tsc -b --noEmit"
   },
   "dependencies": {
