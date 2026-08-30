@@ -103,6 +103,22 @@
                 }
             ],
             "UUID": "com.cmarabate.streamdock.streamdockbridge.reddit"
+        },
+        "1,2": {
+            "ActionID": "5c2f9d41-7a63-4b18-9e50-2b8d6f04a7c3",
+            "Controller": "Keypad",
+            "Name": "TRANSCRIBE",
+            "Settings": {},
+            "State": 0,
+            "States": [
+                {
+                    "Image": "Images/useful_transcribe.png",
+                    "ShowTitle": false,
+                    "Title": "",
+                    "TitleAlignment": "bottom"
+                }
+            ],
+            "UUID": "com.cmarabate.streamdock.streamdockbridge.transcribe"
         }
     },
     "Name": "USEFUL v2"

@@ -36,8 +36,10 @@ fs.mkdirSync(childRecordDir, { recursive: true });
 
 // Copy distinct key art
 const vsdImages = path.join('packages', 'vsd-plugin', 'images');
-['useful_audio_fix.png', 'useful_imdb.png', 'useful_cast.png', 'useful_justwatch.png', 'useful_reddit.png'].forEach((name, idx) => {
-  const srcNames = ['audio_fix.png', 'imdb_key.png', 'cast_key.png', 'justwatch_key.png', 'reddit_key.png'];
+// useful_transcribe uses the plugin's own icon: there is no dedicated key art
+// for this action yet, and inventing one is not this change's job.
+['useful_audio_fix.png', 'useful_imdb.png', 'useful_cast.png', 'useful_justwatch.png', 'useful_reddit.png', 'useful_transcribe.png'].forEach((name, idx) => {
+  const srcNames = ['audio_fix.png', 'imdb_key.png', 'cast_key.png', 'justwatch_key.png', 'reddit_key.png', 'icon.png'];
   fs.copyFileSync(path.join(vsdImages, srcNames[idx]), path.join(topImagesDir, name));
   fs.copyFileSync(path.join(vsdImages, srcNames[idx]), path.join(childImagesDir, name));
 });
@@ -66,7 +68,7 @@ const topManifest = {
 };
 fs.writeFileSync(path.join(targetProfileDir, 'manifest.json'), JSON.stringify(topManifest, null, 4), 'utf8');
 
-// 2. Child Page Manifest - Contains ONLY the 6 intended actions
+// 2. Child Page Manifest - Contains ONLY the 7 intended actions
 const childManifest = {
   Actions: {
     '0,1': {
@@ -172,6 +174,22 @@ const childManifest = {
         }
       ],
       UUID: 'com.cmarabate.streamdock.streamdockbridge.reddit'
+    },
+    '1,2': {
+      ActionID: '5c2f9d41-7a63-4b18-9e50-2b8d6f04a7c3',
+      Controller: 'Keypad',
+      Name: 'TRANSCRIBE',
+      Settings: {},
+      State: 0,
+      States: [
+        {
+          Image: 'Images/useful_transcribe.png',
+          ShowTitle: false,
+          Title: '',
+          TitleAlignment: 'bottom'
+        }
+      ],
+      UUID: 'com.cmarabate.streamdock.streamdockbridge.transcribe'
     }
   },
   Name: 'USEFUL v2'

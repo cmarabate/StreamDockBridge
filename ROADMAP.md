@@ -197,10 +197,12 @@ mirrors downstream behaviour and must be widened if TranscriptForge gains provid
 
 #### Deployment note
 
-The plugin exposes the new action, but `USEFUL v2.StreamDockProfile` was intentionally
-left unchanged so the pending Browser Context MVP canary still tests the same artifact.
-The button is added by dragging **StreamDockBridge → Transcribe Current Video** onto a
-free key in VSD Craft.
+Exposing the action in the plugin manifest does not put a button on the deck — the
+profile binds keys to action UUIDs independently. `USEFUL v2.StreamDockProfile` now
+carries a seventh control, **TRANSCRIBE** at slot `1,2`, generated through
+`scripts/packageCleanProfile.js` like every other key. The six Browser Context and
+AUDIO FIX controls are unchanged. It reuses the plugin's own icon, since no dedicated
+key art exists for it yet.
 
 ### Phase 2B — AgentOS Safe Hardware-Action Contract — `INVESTIGATION`
 

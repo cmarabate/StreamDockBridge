@@ -83,10 +83,11 @@ function validateProfileDirectory(profileDir: string) {
   // BOTTOM ROW
   expect(actions['0,2']?.UUID).toBe('com.cmarabate.streamdock.streamdockbridge.reddit');
   expect(actions['0,2']?.Name).toBe('REDDIT');
+  expect(actions['1,2']?.UUID).toBe('com.cmarabate.streamdock.streamdockbridge.transcribe');
+  expect(actions['1,2']?.Name).toBe('TRANSCRIBE');
 
-  // Exactly six actions total — no other buttons, no knobs, no touch bar
-  expect(Object.keys(actions).sort()).toEqual(['0,1', '0,2', '1,1', '2,1', '3,1', '4,1'].sort());
-  expect(actions['1,2']).toBeUndefined();
+  // Exactly seven actions total — no other buttons, no knobs, no touch bar
+  expect(Object.keys(actions).sort()).toEqual(['0,1', '0,2', '1,1', '1,2', '2,1', '3,1', '4,1'].sort());
   expect(actions['2,2']).toBeUndefined();
   expect(actions['3,2']).toBeUndefined();
   expect(actions['4,2']).toBeUndefined();
