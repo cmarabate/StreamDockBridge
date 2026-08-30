@@ -1,6 +1,6 @@
 import {
   resolveSiteIcon,
-  rankIconCandidates,
+  collectLinkCandidates,
   extractLinkTags,
   sniffMime,
   pngDimensions,
@@ -9,6 +9,7 @@ import {
   RESOLVE_BUDGET_MS,
 } from './iconResolve';
 import { FetchedResource, GetOptions, IconFetchError, MAX_RESPONSE_BYTES } from './iconFetch';
+import { orderCandidates } from './iconRank';
 
 /** Real magic bytes, so the sniffer is tested against what sites actually serve. */
 const PNG = Buffer.concat([
@@ -129,9 +130,12 @@ describe('sniffing what the bytes actually are', () => {
   });
 });
 
-describe('ranking declared icons', () => {
+/** Download ORDER from markup alone — the winner is still decided from bytes. */
+const ordered = (html: string) => orderCandidates(collectLinkCandidates(html));
+
+describe('ordering declared icons for download', () => {
   it('prefers the smallest size that still covers the key', () => {
-    const ranked = rankIconCandidates(
+    const ranked = ordered(
       '<link rel="icon" sizes="16x16" href="/a.png">' +
         '<link rel="icon" sizes="144x144" href="/b.png">' +
         '<link rel="icon" sizes="512x512" href="/c.png">'
@@ -140,7 +144,7 @@ describe('ranking declared icons', () => {
   });
 
   it('falls back to the largest below the key size', () => {
-    const ranked = rankIconCandidates(
+    const ranked = ordered(
       '<link rel="icon" sizes="16x16" href="/small.png">' +
         '<link rel="icon" sizes="64x64" href="/mid.png">'
     );
@@ -148,15 +152,15 @@ describe('ranking declared icons', () => {
   });
 
   it('accepts every icon rel form sites really use', () => {
-    expect(rankIconCandidates('<link rel="icon" href="/a.ico">')[0].href).toBe('/a.ico');
-    expect(rankIconCandidates('<link rel="shortcut icon" href="/b.ico">')[0].href).toBe('/b.ico');
-    expect(rankIconCandidates('<link rel="apple-touch-icon" href="/c.png">')[0].href).toBe('/c.png');
-    expect(rankIconCandidates("<link rel='ICON' href='/d.png'>")[0].href).toBe('/d.png');
-    expect(rankIconCandidates('<link rel=icon href="/e.png">')[0].href).toBe('/e.png');
+    expect(ordered('<link rel="icon" href="/a.ico">')[0].href).toBe('/a.ico');
+    expect(ordered('<link rel="shortcut icon" href="/b.ico">')[0].href).toBe('/b.ico');
+    expect(ordered('<link rel="apple-touch-icon" href="/c.png">')[0].href).toBe('/c.png');
+    expect(ordered("<link rel='ICON' href='/d.png'>")[0].href).toBe('/d.png');
+    expect(ordered('<link rel=icon href="/e.png">')[0].href).toBe('/e.png');
   });
 
   it('prefers an unsized apple-touch-icon over an unsized plain icon', () => {
-    const ranked = rankIconCandidates(
+    const ranked = ordered(
       '<link rel="icon" href="/plain.png"><link rel="apple-touch-icon" href="/touch.png">'
     );
     expect(ranked[0].href).toBe('/touch.png');
@@ -194,10 +198,10 @@ describe('ranking declared icons', () => {
   });
 
   it('ignores rels and types that would render as a blob', () => {
-    expect(rankIconCandidates('<link rel="mask-icon" href="/m.svg">')).toHaveLength(0);
-    expect(rankIconCandidates('<link rel="icon" type="image/svg+xml" href="/s.svg">')).toHaveLength(0);
-    expect(rankIconCandidates('<link rel="stylesheet" href="/x.css">')).toHaveLength(0);
-    expect(rankIconCandidates('<link rel="icon">')).toHaveLength(0);
+    expect(ordered('<link rel="mask-icon" href="/m.svg">')).toHaveLength(0);
+    expect(ordered('<link rel="icon" type="image/svg+xml" href="/s.svg">')).toHaveLength(0);
+    expect(ordered('<link rel="stylesheet" href="/x.css">')).toHaveLength(0);
+    expect(ordered('<link rel="icon">')).toHaveLength(0);
   });
 });
 
@@ -255,7 +259,9 @@ describe('resolving a site icon', () => {
     const result = await resolveSiteIcon('https://example.com', get);
     expect(result).toMatchObject({ ok: true });
     if (result.ok) expect(result.icon.mime).toBe('image/x-icon');
-    expect(asked).toEqual(['https://example.com', 'https://example.com/favicon.ico']);
+    // Both conventional fallbacks are tried; only favicon.ico exists here.
+    expect(asked).toContain('https://example.com/favicon.ico');
+    expect(asked[0]).toBe('https://example.com');
   });
 
   it('falls back to /favicon.ico when the page itself cannot be read', async () => {
@@ -421,7 +427,10 @@ describe('resolving a site icon', () => {
 
     await expect(resolveSiteIcon('https://example.com', get)).resolves.toMatchObject({ ok: true });
     // None of the ineligible candidates was ever requested.
-    expect(asked).toEqual(['https://example.com', 'https://example.com/favicon.ico']);
+    expect(asked).not.toContain('http://127.0.0.1/secret.png');
+    expect(asked).not.toContain('ftp://example.com/x.png');
+    expect(asked).not.toContain('http://example.com:8080/x.png');
+    expect(asked).toContain('https://example.com/favicon.ico');
   });
 
   /** A redirect into private space ends the attempt rather than trying on. */

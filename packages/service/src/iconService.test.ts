@@ -42,6 +42,13 @@ const service = (net = counter()) => ({
   icons: new IconService(new IconCache(null), net.get),
 });
 
+/** A site whose page and both conventional fallbacks are all non-images. */
+const nothingUsable = () => ({
+  'https://example.com': PAGE,
+  'https://example.com/apple-touch-icon.png': PAGE,
+  'https://example.com/favicon.ico': PAGE,
+});
+
 const YOUTUBE = 'https://www.youtube.com/results?search_query={title}+trailer';
 const YOUTUBE_OTHER_QUERY = 'https://www.youtube.com/results?search_query={title}+review';
 const ROTTEN = 'https://www.rottentomatoes.com/search?search={title}';
@@ -126,7 +133,11 @@ describe('resolving the icon for a template', () => {
     ]);
 
     expect(outcomes.every((o) => o.status === 'loaded')).toBe(true);
-    expect(net.countFor('youtube.com')).toBe(2); // the page, then the icon
+    // One resolution's worth of traffic, not six. The exact count is whatever a
+    // single resolve costs; what matters is that it did not multiply.
+    const single = counter();
+    await new IconService(new IconCache(null), single.get).resolve(YOUTUBE);
+    expect(net.countFor('youtube.com')).toBe(single.countFor('youtube.com'));
   });
 
   it('keeps concurrent requests for different origins separate', async () => {
@@ -225,7 +236,7 @@ describe('what is not eligible for a server-side fetch', () => {
 
 describe('failure never escapes', () => {
   it('reports unavailable when the site offers nothing usable', async () => {
-    const net = counter({ 'https://example.com': PAGE, 'https://example.com/favicon.ico': PAGE });
+    const net = counter(nothingUsable());
     const icons = new IconService(new IconCache(null), net.get);
     expect((await icons.resolve('https://example.com/?q={title}')).status).toBe('unavailable');
   });
@@ -240,7 +251,7 @@ describe('failure never escapes', () => {
   });
 
   it('does not re-fetch a site that just failed', async () => {
-    const net = counter({ 'https://example.com': PAGE, 'https://example.com/favicon.ico': PAGE });
+    const net = counter(nothingUsable());
     const icons = new IconService(new IconCache(null), net.get);
     await icons.resolve('https://example.com/?q={title}');
     const before = net.calls.length;
@@ -264,6 +275,7 @@ describe('failure never escapes', () => {
     const oversized = Buffer.concat([PNG, Buffer.alloc(MAX_RESPONSE_BYTES + 1)]);
     const net = counter({
       'https://example.com': PAGE,
+      'https://example.com/apple-touch-icon.png': oversized,
       'https://example.com/favicon.ico': oversized,
     });
     const icons = new IconService(new IconCache(null), net.get);

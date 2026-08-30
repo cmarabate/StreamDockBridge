@@ -10,6 +10,7 @@ import {
   SUCCESS_TTL_MS,
   FAILURE_TTL_MS,
   MAX_DATA_URI_LENGTH,
+  CACHE_VERSION,
 } from './iconCache';
 
 const icon = (bytes = 64, mime = 'image/png'): IconCacheHit => ({
@@ -167,7 +168,7 @@ describe('surviving a restart', () => {
     fs.writeFileSync(
       file,
       JSON.stringify({
-        version: 1,
+        version: CACHE_VERSION,
         entries: [
           { origin: 'https://a.com', icon: { dataUri: 'javascript:alert(1)', mime: 'image/png', bytes: 4 }, fetchedAt: now },
           { origin: 'https://b.com', icon: { dataUri: 'data:image/svg+xml;base64,AAAA', mime: 'image/svg+xml', bytes: 4 }, fetchedAt: now },
@@ -198,7 +199,7 @@ describe('surviving a restart', () => {
     fs.writeFileSync(
       file,
       JSON.stringify({
-        version: 1,
+        version: CACHE_VERSION,
         entries: [
           {
             origin: 'https://liar.com',
@@ -221,7 +222,7 @@ describe('surviving a restart', () => {
     fs.writeFileSync(
       file,
       JSON.stringify({
-        version: 1,
+        version: CACHE_VERSION,
         entries: [
           {
             origin: 'https://nl.com',

@@ -531,11 +531,68 @@ completed gate.
 - automatic website icons function on the real hardware;
 - Context URL key behaviour remains correct alongside them.
 
-**One quality defect remains open.** The owner reports the **ReelGood icon is visibly
-blurry**, and the supplied screenshot shows it already blurry in the Property Inspector
-preview — so this is an asset-selection defect, not N4 display scaling. The owner did not
-report any other icon as poor, and no claim is made here about how any other individual
-image looked. Tracked below.
+**One quality defect was reported and is now fixed.** The owner reported the **ReelGood
+icon was visibly blurry**, and the supplied screenshot showed it already blurry in the
+Property Inspector preview — an asset-selection defect, not N4 display scaling. The owner
+did not report any other icon as poor, and no claim is made here about how any other
+individual image looked. See the next section.
+
+### Icon quality: choosing the best asset, not the first — `DONE` / `VERIFIED AUTOMATED` + `VERIFIED RUNTIME` / `WAITING PHYSICAL TESTING`
+
+**Root cause, and it was generic.** `reelgood.com` answers its own homepage with **HTTP
+403** while still serving a complete `<head>` that declares
+`<link rel="icon" href="https://img.rgstatic.com/icon_120x120.png">`. The resolver only
+harvested declared icons from a 2xx page, so it discarded that markup and fell through to
+`/favicon.ico` — a 33 KB ICO whose largest entry is **64×64**, upscaled to a ~126 px key.
+
+A second, independent defect made it worse: ranking used only the **declared** `sizes`
+attribute, and ReelGood declares none, so even a harvested candidate would have been
+ordered behind anything that bothered to declare itself. The resolver then took the
+**first** acceptable candidate rather than the best.
+
+**Fixes, none of them specific to ReelGood:**
+
+- a page's `<head>` is harvested whatever its status code — a 403 still describes its own
+  icons, and every harvested href is still policy-checked before it is requested;
+- **web app manifest** icons are now a candidate source, bounded to 64 KB of JSON;
+  `purpose: maskable` assets are skipped because they carry a safe-zone margin and render
+  padded;
+- `/apple-touch-icon.png` joins `/favicon.ico` as a conventional fallback;
+- candidates are ordered by what the page *claims*, then **downloaded and scored on the
+  pixels that actually arrived**, keeping the best — the declared score now only decides
+  download order. Undeclared candidates rank ahead of declared-tiny ones, which is exactly
+  the case that lost;
+- scoring prefers the smallest asset that still covers the key (so 144 beats 512), then
+  the largest that does not, using the **smaller side** because that is what bounds a
+  square key, with a square-ness tiebreaker. Downloads stop early once something ideal
+  arrives, so the common case still costs one image;
+- at most 4 candidates are downloaded, inside the existing 20 s resolution budget.
+
+**Cache migration.** `CACHE_VERSION` is now 2 and a file written by an older version is
+discarded on load, so every origin is re-resolved by the current algorithm rather than
+serving an asset an older one chose. No manual flush is needed.
+
+**Measured result** against the real internet, cold cache — actual pixels, read from the
+bytes that reach `setImage`:
+
+| Site | before | after |
+| --- | --- | --- |
+| **reelgood.com** | **64×64** ICO | **120×120** PNG (`img.rgstatic.com/icon_120x120.png`) |
+| rottentomatoes.com | 6 KB JPEG | **128×128** PNG (manifest icon) |
+| imdb.com | small favicon | **60×60** apple-touch |
+| en.wikipedia.org | 1313 B | **160×160** apple-touch |
+| github.com | 32×32 ICO | **120×120** apple-touch |
+| stackoverflow.com | 48×48 ICO | **180×180** apple-touch |
+| bbc.co.uk | — | **128×128** touch icon |
+| youtube.com | 144×144 | **144×144** (unchanged, already ideal) |
+
+**Honest limits.** JustWatch publishes only a two-entry ICO (16×16 and 32×32) and Reddit
+only 64×64; those are site ceilings, not resolver defects, and were confirmed by reading
+the real ICO directories. IMDb's 60×60 apple-touch is likewise the best it offers on the
+standard paths. Nothing here crawls a site for a brand logo.
+
+**Physical acceptance outstanding** — the owner has not yet confirmed the sharper ReelGood
+icon on the N4 Pro.
 
 ### Phase 2B — AgentOS Safe Hardware-Action Contract — `PLANNED` (design agreed, not implemented)
 

@@ -1,5 +1,6 @@
 import { safeGet, IconFetchError, MAX_RESPONSE_BYTES, hopPolicyFailure } from './iconFetch';
 import { imageDimensions } from './imageDimensions';
+import { IconCandidate, orderCandidates, scoreActualDimensions, isExcellent } from './iconRank';
 
 /**
  * Turning a site origin into an image the deck can display.
@@ -22,8 +23,16 @@ export const MAX_HTML_BYTES = 192 * 1024;
  */
 export const RESOLVE_BUDGET_MS = 20000;
 
-/** How many declared candidates are worth trying before giving up. */
-export const MAX_CANDIDATES = 5;
+/**
+ * How many candidates are actually downloaded before the best so far wins.
+ *
+ * Enough to get past a small favicon.ico to a real asset, few enough that a
+ * hostile page cannot turn one key into a download run.
+ */
+export const MAX_CANDIDATES_FETCHED = 4;
+
+/** A web app manifest is small JSON; anything larger is not one. */
+export const MAX_MANIFEST_BYTES = 64 * 1024;
 
 /** MIME types the host's own data-URI table accepts, minus the risky ones. */
 const ACCEPTED = [
@@ -48,6 +57,9 @@ export interface ResolvedIcon {
   sourceUrl: string;
   mime: string;
   bytes: number;
+  /** Actual pixels, so callers can report why an icon looks the way it does. */
+  width: number;
+  height: number;
 }
 
 export type IconResolveFailure =
@@ -75,11 +87,6 @@ export function sniffMime(body: Buffer): string | null {
 }
 
 export { pngDimensions } from './imageDimensions';
-
-interface Candidate {
-  href: string;
-  score: number;
-}
 
 /**
  * Pull `<link ...>` tags out of a page.
@@ -117,23 +124,34 @@ export function extractLinkTags(html: string): string[] {
   return tags;
 }
 
+/** The largest square size a tag declares, using the SMALLER side of each pair. */
+function largestDeclaredSize(sizes: string): number {
+  let largest = 0;
+  for (const token of sizes.toLowerCase().split(/\s+/)) {
+    const match = /^(\d+)x(\d+)$/.exec(token);
+    if (match) largest = Math.max(largest, Math.min(Number(match[1]), Number(match[2])));
+  }
+  return largest;
+}
+
 /**
- * Rank declared icons for a ~126px square key.
+ * Collect declared icon candidates from a page's markup.
  *
- * The HTML spec has no ranked list of rel values — `sizes` and `type` are the
- * normative signals — so ranking is by declared size, preferring the smallest
- * that still exceeds the key, then the largest below it. apple-touch-icon is
- * non-standard but is present on a large share of sites and is usually 180px,
- * which is exactly the right neighbourhood.
+ * Returns candidates with their DECLARED size only. Nothing is judged finally
+ * here — the winner is decided from downloaded bytes, because `sizes` is
+ * routinely absent (ReelGood declares a 120x120 icon with no `sizes` at all)
+ * and routinely wrong.
  */
-export function rankIconCandidates(html: string): Candidate[] {
-  const candidates: Candidate[] = [];
+export function collectLinkCandidates(html: string): IconCandidate[] {
+  const candidates: IconCandidate[] = [];
 
   for (const tag of extractLinkTags(html)) {
     const rel = (/\brel\s*=\s*["']?([^"'>]+)/i.exec(tag) || [])[1];
     if (!rel) continue;
     const tokens = rel.toLowerCase().split(/\s+/);
-    const isIcon = tokens.includes('icon') || tokens.includes('apple-touch-icon');
+    const appleTouch =
+      tokens.includes('apple-touch-icon') || tokens.includes('apple-touch-icon-precomposed');
+    const isIcon = tokens.includes('icon') || appleTouch;
     // mask-icon and monochrome purposes are silhouettes; they render as blobs.
     if (!isIcon || tokens.includes('mask-icon')) continue;
 
@@ -143,39 +161,71 @@ export function rankIconCandidates(html: string): Candidate[] {
     const type = ((/\btype\s*=\s*["']?([^"'>\s]+)/i.exec(tag) || [])[1] || '').toLowerCase();
     if (type.includes('svg')) continue; // see the note on SVG above
 
-    const sizes = ((/\bsizes\s*=\s*["']?([^"'>]+)/i.exec(tag) || [])[1] || '').toLowerCase();
-    let largest = 0;
-    for (const token of sizes.split(/\s+/)) {
-      const match = /^(\d+)x(\d+)$/.exec(token);
-      if (match) largest = Math.max(largest, Number(match[1]));
-    }
-
-    /**
-     * Lowest score wins. Four bands, in order of preference:
-     *   1. covers the key  — smallest first, so a 144px icon beats a 512px one
-     *   2. below the key   — largest first
-     *   3. undeclared apple-touch-icon, which is conventionally around 180px
-     *   4. undeclared anything else
-     * The clamp keeps an absurd declared size inside its own band rather than
-     * letting it fall through into a later one.
-     */
-    const KEY_PIXELS = 128;
-    let score: number;
-    if (largest >= KEY_PIXELS) score = Math.min(largest, 9000);
-    else if (largest > 0) score = 10000 - largest;
-    else score = tokens.includes('apple-touch-icon') ? 20000 : 30000;
-
-    candidates.push({ href, score });
+    const sizes = ((/\bsizes\s*=\s*["']?([^"'>]+)/i.exec(tag) || [])[1] || '');
+    candidates.push({
+      href,
+      declaredSize: largestDeclaredSize(sizes),
+      source: appleTouch ? 'apple-touch' : 'link',
+    });
   }
 
-  return candidates.sort((a, b) => a.score - b.score);
+  return candidates;
+}
+
+/** The web app manifest URL a page declares, if any. */
+export function manifestHref(html: string): string | null {
+  for (const tag of extractLinkTags(html)) {
+    const rel = (/\brel\s*=\s*["']?([^"'>]+)/i.exec(tag) || [])[1];
+    if (!rel || !rel.toLowerCase().split(/\s+/).includes('manifest')) continue;
+    const href = (/\bhref\s*=\s*["']([^"']+)/i.exec(tag) || [])[1];
+    if (href) return href;
+  }
+  return null;
+}
+
+/**
+ * Icons declared by a web app manifest.
+ *
+ * These are the assets a site chose for a home-screen tile, so they are square,
+ * raster and usually 192px or better — very close to what a key wants.
+ */
+export function collectManifestCandidates(json: string): IconCandidate[] {
+  let parsed: any;
+  try {
+    parsed = JSON.parse(json);
+  } catch (e) {
+    return [];
+  }
+  if (!parsed || !Array.isArray(parsed.icons)) return [];
+
+  const candidates: IconCandidate[] = [];
+  for (const icon of parsed.icons.slice(0, 40)) {
+    if (!icon || typeof icon.src !== 'string' || !icon.src) continue;
+    const type = typeof icon.type === 'string' ? icon.type.toLowerCase() : '';
+    if (type.includes('svg')) continue;
+    /**
+     * A "maskable" asset carries a safe-zone margin and renders small and
+     * padded inside a square, so it is only used when it also claims "any".
+     */
+    const purpose = typeof icon.purpose === 'string' ? icon.purpose.toLowerCase() : '';
+    if (purpose && !purpose.split(/\s+/).includes('any')) continue;
+
+    candidates.push({
+      href: icon.src,
+      declaredSize: typeof icon.sizes === 'string' ? largestDeclaredSize(icon.sizes) : 0,
+      source: 'manifest',
+    });
+  }
+  return candidates;
 }
 
 function toDataUri(body: Buffer, mime: string): string {
   return `data:${mime};base64,${body.toString('base64')}`;
 }
 
-function accept(body: Buffer, sourceUrl: string): IconResolveResult {
+type AcceptResult = { ok: true; icon: ResolvedIcon } | { ok: false; reason: IconResolveFailure };
+
+function accept(body: Buffer, sourceUrl: string): AcceptResult {
   const mime = sniffMime(body);
   // Content-Type is not trusted: a large share of /favicon.ico responses are
   // actually PNG, and vice versa.
@@ -191,9 +241,7 @@ function accept(body: Buffer, sourceUrl: string): IconResolveResult {
    * Unreadable dimensions are a REFUSAL, not a pass. All four accepted formats
    * carry their size in a header, so a file whose header cannot be read is
    * either malformed or crafted to defeat this check while a more lenient
-   * decoder still resyncs and honours the real value. Real sites are unaffected
-   * — and a site with one odd icon still has its remaining candidates and
-   * /favicon.ico to fall back on.
+   * decoder still resyncs and honours the real value.
    */
   const dims = imageDimensions(body, mime);
   if (!dims) return { ok: false, reason: 'unsupported_image' };
@@ -202,23 +250,54 @@ function accept(body: Buffer, sourceUrl: string): IconResolveResult {
   }
   if (dims.width <= 0 || dims.height <= 0) return { ok: false, reason: 'unsupported_image' };
 
-  return { ok: true, icon: { dataUri: toDataUri(body, mime), sourceUrl, mime, bytes: body.length } };
+  return {
+    ok: true,
+    icon: {
+      dataUri: toDataUri(body, mime),
+      sourceUrl,
+      mime,
+      bytes: body.length,
+      width: dims.width,
+      height: dims.height,
+    },
+  };
 }
 
 export type Getter = typeof safeGet;
 
+/** Absolute, policy-eligible URL for a candidate, or null. */
+function eligibleUrl(href: string, base: string): string | null {
+  let absolute: URL;
+  try {
+    absolute = new URL(href, base);
+  } catch (e) {
+    return null;
+  }
+  /**
+   * Judged BEFORE it is requested. A page is free to declare an ineligible
+   * href, and that is its own problem, not a redirect attack — so it must skip
+   * to the next candidate. That distinction is only possible if a policy
+   * refusal from `get` can mean one thing: a redirect went somewhere it should
+   * not.
+   */
+  if (hopPolicyFailure(absolute)) return null;
+  return absolute.toString();
+}
+
 /**
- * Discover and fetch a site's icon.
+ * Discover and fetch the best icon a site offers.
  *
- * Declared icons first, because /favicon.ico is conventional rather than
- * required and skews to 16-32px, which looks poor on a key. /favicon.ico
- * remains the fallback — and is all some sites offer.
+ * Candidates are ordered by what the page CLAIMS, then downloaded in that order
+ * and scored on what actually arrived, keeping the best. Downloading stops
+ * early once something ideal for the key turns up, so the common case still
+ * costs a single image.
  */
 export async function resolveSiteIcon(origin: string, get: Getter = safeGet): Promise<IconResolveResult> {
   const deadline = Date.now() + RESOLVE_BUDGET_MS;
   const remaining = () => deadline - Date.now();
 
-  const hrefs: string[] = [];
+  const candidates: IconCandidate[] = [];
+  let base = origin;
 
   try {
     // Truncate rather than fail: many homepages exceed any sane cap, and the
@@ -228,13 +307,40 @@ export async function resolveSiteIcon(origin: string, get: Getter = safeGet): Pr
       allowTruncation: true,
       totalTimeoutMs: remaining(),
     });
-    if (page.status >= 200 && page.status < 300) {
+
+    /**
+     * Deliberately NOT gated on a 2xx status.
+     *
+     * reelgood.com answers its own homepage with 403 while still serving a
+     * complete <head> that declares a 120x120 icon. Discarding that markup is
+     * what made it fall through to a 64x64 favicon.ico and look blurry on the
+     * key. Nothing is trusted any more than before: every href harvested here
+     * is still policy-checked before it is requested.
+     */
+    if (page.body.length > 0) {
+      base = page.finalUrl;
       const html = page.body.toString('utf8');
-      for (const candidate of rankIconCandidates(html)) {
-        try {
-          hrefs.push(new URL(candidate.href, page.finalUrl).toString());
-        } catch (e) {
-          // A malformed href is simply not a candidate.
+      candidates.push(...collectLinkCandidates(html));
+
+      const manifest = manifestHref(html);
+      if (manifest && remaining() > 0) {
+        const manifestUrl = eligibleUrl(manifest, base);
+        if (manifestUrl) {
+          try {
+            const response = await get(manifestUrl, {
+              maxBytes: MAX_MANIFEST_BYTES,
+              totalTimeoutMs: remaining(),
+            });
+            if (response.status >= 200 && response.status < 300) {
+              for (const candidate of collectManifestCandidates(response.body.toString('utf8'))) {
+                // A manifest's srcs resolve against the manifest, not the page.
+                const absolute = eligibleUrl(candidate.href, response.finalUrl);
+                if (absolute) candidates.push({ ...candidate, href: absolute });
+              }
+            }
+          } catch (e) {
+            // A missing or hostile manifest is simply not a source of candidates.
+          }
         }
       }
     }
@@ -242,50 +348,63 @@ export async function resolveSiteIcon(origin: string, get: Getter = safeGet): Pr
     // The site may refuse the HTML fetch and still serve /favicon.ico.
   }
 
-  try {
-    hrefs.push(new URL('/favicon.ico', origin).toString());
-  } catch (e) {
-    return { ok: false, reason: 'no_candidates' };
-  }
+  // Conventional fallbacks, ordered last by their undeclared-size score.
+  candidates.push({ href: '/apple-touch-icon.png', declaredSize: 0, source: 'fallback' });
+  candidates.push({ href: '/favicon.ico', declaredSize: 0, source: 'fallback' });
 
+  const ordered: IconCandidate[] = [];
+  for (const candidate of orderCandidates(candidates)) {
+    const absolute = eligibleUrl(candidate.href, base);
+    if (absolute) ordered.push({ ...candidate, href: absolute });
+  }
+  if (ordered.length === 0) return { ok: false, reason: 'no_candidates' };
+
+  let best: ResolvedIcon | null = null;
+  let bestScore = Number.POSITIVE_INFINITY;
   /**
    * The most specific reason any candidate gave. Without this, a refusal as
    * precise as "declares 30000x30000" is reported as the generic
    * "unsupported_image", which is misleading in diagnostics.
    */
   let refusal: IconResolveFailure | null = null;
+  let fetched = 0;
 
-  for (const href of hrefs.slice(0, MAX_CANDIDATES)) {
-    if (remaining() <= 0) break;
+  for (const candidate of ordered) {
+    if (fetched >= MAX_CANDIDATES_FETCHED || remaining() <= 0) break;
 
-    /**
-     * Judge the candidate BEFORE requesting it. A page is free to declare an
-     * ineligible href, and that is its own problem, not a redirect attack — so
-     * it must skip to the next candidate rather than abandoning the site. That
-     * distinction is only possible if a policy refusal from `get` below can
-     * mean one thing: a redirect went somewhere it should not.
-     */
-    try {
-      if (hopPolicyFailure(new URL(href))) continue;
-    } catch (e) {
-      continue;
-    }
-
+    let response;
     try {
       // An image is useless partial, so no truncation here.
-      const response = await get(href, { totalTimeoutMs: remaining() });
-      if (response.status < 200 || response.status >= 300) continue;
-      const result = accept(response.body, response.finalUrl);
-      if (result.ok) return result;
-      refusal = result.reason;
+      response = await get(candidate.href, { totalTimeoutMs: remaining() });
     } catch (e) {
       if (e instanceof IconFetchError && (e.reason === 'blocked_host' || e.reason === 'blocked_address')) {
         // The candidate itself was eligible, so this can only be a redirect
         // into somewhere it should not go. That ends the attempt.
         return { ok: false, reason: 'fetch_failed' };
       }
+      fetched++;
+      continue;
     }
+
+    fetched++;
+    if (response.status < 200 || response.status >= 300) continue;
+
+    const result = accept(response.body, response.finalUrl);
+    if (!result.ok) {
+      refusal = result.reason;
+      continue;
+    }
+
+    const score = scoreActualDimensions(result.icon.width, result.icon.height);
+    if (score < bestScore) {
+      bestScore = score;
+      best = result.icon;
+    }
+
+    // Good enough that another download cannot meaningfully improve the key.
+    if (isExcellent(result.icon.width, result.icon.height)) break;
   }
 
+  if (best) return { ok: true, icon: best };
   return { ok: false, reason: refusal ?? 'fetch_failed' };
 }

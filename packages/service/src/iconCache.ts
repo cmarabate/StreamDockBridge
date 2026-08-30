@@ -23,6 +23,16 @@ export const MAX_TOTAL_BYTES = 2 * 1024 * 1024;
  * scheme prefix; the slack covers both without admitting anything absurd.
  */
 export const MAX_DATA_URI_LENGTH = Math.ceil(MAX_ENTRY_BYTES * 1.4) + 64;
+/**
+ * Bumped whenever the resolver's CHOICE of asset changes, so entries picked by
+ * an older algorithm are re-resolved instead of being served forever.
+ *
+ * v2: the resolver now downloads several candidates and keeps the best by
+ * measured pixels. v1 kept the first valid one, which is how a 64x64
+ * favicon.ico ended up on a 126px key looking blurry.
+ */
+export const CACHE_VERSION = 2;
+
 /** A cached icon is reused for this long before it is re-resolved. */
 export const SUCCESS_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 /**
@@ -143,6 +153,9 @@ export class IconCache {
       if (!fs.existsSync(this.file)) return;
       const parsed = JSON.parse(fs.readFileSync(this.file, 'utf8'));
       if (!parsed || !Array.isArray(parsed.entries)) return;
+      // A file written by an older resolver holds assets an older algorithm
+      // chose. Start empty so every origin is picked again by the current one.
+      if (parsed.version !== CACHE_VERSION) return;
       const now = Date.now();
       for (const raw of parsed.entries) {
         // Anything malformed on disk is dropped rather than trusted: this file
@@ -197,7 +210,7 @@ export class IconCache {
       // Unique per process and per write, so two instances cannot clobber one
       // another's temporary file and rename a half-written one into place.
       const tmp = `${this.file}.${process.pid}.${(this.writeCounter += 1)}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify({ version: 1, entries }), 'utf8');
+      fs.writeFileSync(tmp, JSON.stringify({ version: CACHE_VERSION, entries }), 'utf8');
       // Atomic-ish: a crash mid-write leaves the previous file intact.
       fs.renameSync(tmp, this.file);
     } catch (e) {
