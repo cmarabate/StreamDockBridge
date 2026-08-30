@@ -138,6 +138,7 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
             ogTitle: payload.ogTitle || '',
             twitterTitle: payload.twitterTitle || '',
             jsonLdTitle: payload.jsonLdTitle || '',
+            jsonLdSeriesTitle: payload.jsonLdSeriesTitle || '',
             canonicalTitle: cleanedTitle,
             tabId: payload.tabId ?? 0,
             windowId: payload.windowId ?? 0,

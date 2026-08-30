@@ -6,6 +6,8 @@ export interface ContextRecord {
   ogTitle: string;
   twitterTitle: string;
   jsonLdTitle: string;
+  /** Series name from structured page metadata, when the page declares one. */
+  jsonLdSeriesTitle: string;
   canonicalTitle: string;
   tabId: number;
   windowId: number;

@@ -88,6 +88,7 @@ describe('POST /actions/transcribe-current', () => {
       ogTitle: '',
       twitterTitle: '',
       jsonLdTitle: '',
+      jsonLdSeriesTitle: '',
       canonicalTitle: 'A Video',
       tabId: 1,
       windowId: 1,

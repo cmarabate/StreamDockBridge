@@ -51,6 +51,59 @@ The plugin installed at
 is byte-identical to a cold build of this SHA (`dist/main.js`, `manifest.json`, all 11
 images), so the artifact under test is provably the candidate.
 
+#### Physical canary results so far
+
+The owner pressed the N4 IMDb key on 2026-08-30 after importing `USEFUL v2`.
+
+| Control | Physical result |
+| --- | --- |
+| IMDb | **Transport verified** — N4 → plugin → service → browser search all fired correctly. **Lookup semantics failed**: the query carried the season qualifier. Repaired; awaiting retest. |
+| CAST | awaiting physical test |
+| JUSTWATCH | awaiting physical test |
+| REDDIT | awaiting physical test |
+| AUDIO FIX | awaiting physical test |
+| TRANSCRIBE | awaiting physical test |
+
+This is the first real hardware evidence: the whole chain from key press to launched
+browser works. Only the search term was wrong.
+
+#### Work-level title normalization — `DONE` / `VERIFIED AUTOMATED` + `VERIFIED RUNTIME`
+
+The failing context, captured live:
+
+```
+url            https://www.amazon.com/gp/video/detail/0QD2FDHVUZNOEJDT5JE9SSRBQX/…
+rawTitle       Watch Gary and His Demons Season 2 | Prime Video
+og/twitter/jsonLd   (all empty)
+canonicalTitle Watch Gary and His Demons Season 2 | Prime Video   ← unchanged
+```
+
+Three defects, not one: `Prime Video` was absent from the provider-suffix list, there was
+no season/episode handling at all, and the `Watch ` prefix survived. All four lookups read
+`contextStore.canonicalTitle`, so there is exactly **one** title authority and it was
+repaired once.
+
+Strategy, in the order the brief requires:
+
+1. **Structured series metadata wins outright.** The extension now reads schema.org
+   `partOfSeries`, `partOfSeason.partOfSeries` and `isPartOf` and sends `jsonLdSeriesTitle`.
+   When a page states the series it belongs to, that is the work title and no string
+   surgery competes with it. A bare `isPartOf` URL carries no title and is ignored.
+2. **Bounded fallback** only when no structured series exists — which is exactly the
+   Prime Video case, where the page exposed no JSON-LD at all.
+
+Safety of the fallback: every qualifier must begin at a word gap and run to end of string,
+so `District 9`, `1923`, `Catch-22`, `9-1-1`, `Se7en`, `M3GAN`, `Blade Runner 2049`,
+`Season of the Witch` and `Star Wars: Episode IV - A New Hope` are untouched. `Part N` and
+`Vol. N` are deliberately **not** stripped — real titles use them (`Kill Bill: Vol. 2`,
+`Deathly Hallows: Part 2`). A strip that would empty the title is rejected, so `Season 2`
+alone survives. Two bugs of this class were caught by the tests during development:
+`Ocean's 11` lost its tail to the S-code pattern, and `Preseason 2` would have lost its
+head.
+
+Runtime proof against the real failing context — all four now query
+`Gary and His Demons`.
+
 #### Outstanding blockers for physical acceptance
 
 1. The Chrome extension is **disabled** (`disable_reasons:[1]`) while the **Brave** copy

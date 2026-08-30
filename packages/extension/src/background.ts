@@ -223,6 +223,7 @@ export async function syncActiveContext(retryCount = 0) {
       ogTitle: meta.ogTitle,
       twitterTitle: meta.twitterTitle,
       jsonLdTitle: meta.jsonLdTitle,
+      jsonLdSeriesTitle: meta.jsonLdSeriesTitle,
       tabId: tabId,
       windowId: tabWindowId,
       timestamp: Date.now(),
