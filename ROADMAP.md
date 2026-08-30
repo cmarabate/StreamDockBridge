@@ -591,8 +591,60 @@ only 64×64; those are site ceilings, not resolver defects, and were confirmed b
 the real ICO directories. IMDb's 60×60 apple-touch is likewise the best it offers on the
 standard paths. Nothing here crawls a site for a brand logo.
 
-**Physical acceptance outstanding** — the owner has not yet confirmed the sharper ReelGood
-icon on the N4 Pro.
+**Visually confirmed in the host.** The ReelGood icon now renders crisp in the Property
+Inspector preview — the exact surface where the owner saw it blurry. Physical confirmation
+on the N4 Pro itself is outstanding.
+
+### USEFUL v2 consolidated onto Context URL — `DONE` / `VERIFIED AUTOMATED` + `VERIFIED RUNTIME` / `WAITING PHYSICAL TESTING`
+
+The point of the Context URL primitive was that adding a site should not require a new
+plugin action. The live profile now demonstrates it.
+
+**Live profile inventory** (host store, not the repo copy — the repo copy is stale and is
+missing all three Context URL keys):
+`%APPDATA%\HotSpot\StreamDock\profiles\19V6O19O-…sdProfile\profiles\F06684D5-…sdProfile\manifest.json`,
+bound to `VSDN4Pro` serial `01E2D2782F04`. Ten of fifteen slots occupied; row 0 empty.
+
+| Slot | Key | Before | After |
+| --- | --- | --- | --- |
+| 2,1 | IMDb | `…bridge.imdb` | **Context URL** `https://www.imdb.com/find?q={title}` |
+| 3,1 | CAST | `…bridge.cast` | **Context URL** `https://www.google.com/search?q={title}%20cast` |
+| 4,1 | JUSTWATCH | `…bridge.justwatch` | **Context URL** `https://www.justwatch.com/us/search?q={title}` |
+| 0,2 | REDDIT | `…bridge.reddit` | **Context URL** `https://www.reddit.com/search/?q={title}` |
+| 2,2 / 3,2 / 4,2 | Trailers / Rotten Tomatos / ReelGood | already Context URL | unchanged |
+| 0,1 / 1,1 / 1,2 | AUDIO FIX / RECORD / TRANSCRIBE | specialized | **untouched** |
+
+Seven of ten keys are now one generic action. **Nothing web-shaped needs a bespoke action
+type any more.**
+
+**Not converted, and why.** AUDIO FIX switches a Windows audio output device (a
+third-party plugin holding a concrete endpoint in its settings). RECORD is a stateful OBS
+start/stop toggle — a URL cannot hold a toggle. TRANSCRIBE reads the current tab but hands
+it to TranscriptForge; opening a URL would not perform the transcription. Converting any
+of these for uniformity would break them.
+
+**Destinations are byte-identical.** Each migrated template was run through the same
+resolver against the same live context and compared with its old built-in route:
+all four match exactly, including CAST's literal `%20`, which the template engine passes
+through untouched.
+
+**Appearance is preserved deliberately.** Each migrated key keeps its original artwork and
+its `Name`, and is migrated with `autoWebsiteIcon: false`. Turning auto-icon on would have
+*downgraded* three of them — JustWatch publishes only 16×16 and 32×32, which is smaller
+than the existing hand-made art. The mechanism changed; the look did not. The owner can
+switch auto-icon on per key.
+
+**Legacy actions kept, but hidden.** The four original UUIDs still ship and still dispatch,
+so any other profile or installation keeps working. They are now marked
+`"VisibleInActionsList": false` so they no longer appear in the action picker and nobody
+creates new ones. That field is the host's own: it appears in `VSD Craft.exe`'s manifest
+key table between `DisableCaching` and `UserTitleEnabled`, is read into a local
+(`tmpVisibleInActionsList` in the PDB), and is already used by five shipped plugins. There
+is no `Deprecated`/`Hidden`/`ShowInList` field anywhere in the host — this is the only such
+mechanism, and a missing key defaults to visible, so it must be set explicitly.
+
+Verified after a host restart: the profile still holds 7 Context URL bindings and 0 legacy
+bindings, so VSD Craft accepted the migration rather than rewriting it.
 
 ### Phase 2B — AgentOS Safe Hardware-Action Contract — `PLANNED` (design agreed, not implemented)
 

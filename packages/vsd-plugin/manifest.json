@@ -9,8 +9,9 @@
         }
       ],
       "SupportedInMultiActions": true,
-      "Tooltip": "Trigger IMDb search for current tab",
-      "UUID": "com.cmarabate.streamdock.streamdockbridge.imdb"
+      "Tooltip": "Trigger IMDb search for current tab (superseded by Context URL; kept so existing profiles keep working)",
+      "UUID": "com.cmarabate.streamdock.streamdockbridge.imdb",
+      "VisibleInActionsList": false
     },
     {
       "Icon": "images/cast_icon",
@@ -21,8 +22,9 @@
         }
       ],
       "SupportedInMultiActions": true,
-      "Tooltip": "Trigger Cast search for current tab",
-      "UUID": "com.cmarabate.streamdock.streamdockbridge.cast"
+      "Tooltip": "Trigger Cast search for current tab (superseded by Context URL; kept so existing profiles keep working)",
+      "UUID": "com.cmarabate.streamdock.streamdockbridge.cast",
+      "VisibleInActionsList": false
     },
     {
       "Icon": "images/justwatch_icon",
@@ -33,8 +35,9 @@
         }
       ],
       "SupportedInMultiActions": true,
-      "Tooltip": "Trigger JustWatch search for current tab",
-      "UUID": "com.cmarabate.streamdock.streamdockbridge.justwatch"
+      "Tooltip": "Trigger JustWatch search for current tab (superseded by Context URL; kept so existing profiles keep working)",
+      "UUID": "com.cmarabate.streamdock.streamdockbridge.justwatch",
+      "VisibleInActionsList": false
     },
     {
       "Icon": "images/reddit_icon",
@@ -45,8 +48,9 @@
         }
       ],
       "SupportedInMultiActions": true,
-      "Tooltip": "Trigger Reddit search for current tab",
-      "UUID": "com.cmarabate.streamdock.streamdockbridge.reddit"
+      "Tooltip": "Trigger Reddit search for current tab (superseded by Context URL; kept so existing profiles keep working)",
+      "UUID": "com.cmarabate.streamdock.streamdockbridge.reddit",
+      "VisibleInActionsList": false
     },
     {
       "Icon": "images/icon",
