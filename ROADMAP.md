@@ -56,10 +56,46 @@ images), so the artifact under test is provably the candidate.
 1. The Chrome extension is **disabled** (`disable_reasons:[1]`) while the **Brave** copy
    is enabled. Brave is therefore the live context authority. Two enabled copies would
    race for the single-slot context store, so exactly one browser must own it.
-2. `USEFUL v2.StreamDockProfile` has never been imported. The `USEFUL` profile present
-   on the device is a decoy whose buttons are plain `com.hotspot.streamdock.system.website`
-   actions and exercise none of this code.
+2. The profile has never successfully imported. An owner attempt on 2026-08-30 was a
+   **silent no-op** — no error dialog, no new profile, nothing on the device. Diagnosed
+   and repaired; see *Silent profile-import failure* below. The repaired artifact is
+   `USEFUL v2.streamDockProfile` and has not yet been imported.
 3. AUDIO FIX device data is wrong — see below.
+
+#### Silent profile-import failure — `DONE` (repaired) / awaiting host import proof
+
+VSD Craft accepted the import click and did nothing: no dialog, no profile, no device
+change, reproducible. Ground truth came from the 153 profile packages the app ships
+under `defaultData/defaultProfiles` (341 page manifests, 2473 actions, including a
+`VSDN4Pro` set for this exact device). Three deviations from that corpus were found and
+fixed in the generator:
+
+1. **File extension casing — the probable cause of the silence.** The host's packages
+   are all `.streamDockProfile`; ours was `.StreamDockProfile`. `VSD Craft.exe` holds an
+   accepted-suffix table for `SDProfileManager::importProfile` containing both
+   `SDProfile` and `sdprofile` as separate entries — a redundancy that only makes sense
+   if the comparison is case-sensitive — and a separate, all-lowercase table on the
+   `streamdock://` URL path. A non-matching suffix returns without raising an error,
+   which is exactly the observed symptom.
+2. **Page manifest missing `DeviceModel`, `DeviceUUID`, `Version`.** Present in 341/341
+   host page manifests. A page that does not name its device cannot be bound to one, and
+   the host logs `Can not find profile "<page>.sdProfile" ... pathExists: true`.
+3. **Image references.** Package-local art is referenced by **bare basename**, resolved
+   under `Images/`. An `Images/<name>` value denotes an app *built-in* resource — all 18
+   such host values are absent from their own packages. Ours wrote `Images/<name>.png`,
+   naming built-ins that do not exist, and additionally nested
+   `Images/actions/record/`, a shape with zero precedent in 1074 host image entries.
+
+Ruled out rather than "fixed" on appearance: our page-ID format already matched the host
+`8-4-4-4-12` uppercase-base36 shape (355/355), an empty root `Actions` is legal (20/153),
+and `AppIdentifier` and the `manifest.json.*.bak` siblings are common but not universal.
+
+**Why verification did not catch it.** The validator was self-referential: it asserted
+the generator's output against expectations derived from that same generator, so a
+package no host would accept still passed. It is now anchored to the surveyed host
+contract and cross-checks against a real `VSDN4Pro` package from the install.
+
+Causality is **not yet proven** — that requires an actual successful import.
 
 #### Known issue — AUDIO FIX device binding
 
@@ -198,7 +234,7 @@ mirrors downstream behaviour and must be widened if TranscriptForge gains provid
 #### Deployment note
 
 Exposing the action in the plugin manifest does not put a button on the deck — the
-profile binds keys to action UUIDs independently. `USEFUL v2.StreamDockProfile` now
+profile binds keys to action UUIDs independently. `USEFUL v2.streamDockProfile` now
 carries a seventh control, **TRANSCRIBE** at slot `1,2`, generated through
 `scripts/packageCleanProfile.js` like every other key. The six Browser Context and
 AUDIO FIX controls are unchanged. It reuses the plugin's own icon, since no dedicated

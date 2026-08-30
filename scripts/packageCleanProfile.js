@@ -28,12 +28,6 @@ fs.mkdirSync(topImagesDir, { recursive: true });
 const childImagesDir = path.join(targetChildDir, 'Images');
 fs.mkdirSync(childImagesDir, { recursive: true });
 
-const topRecordDir = path.join(topImagesDir, 'actions', 'record');
-fs.mkdirSync(topRecordDir, { recursive: true });
-
-const childRecordDir = path.join(childImagesDir, 'actions', 'record');
-fs.mkdirSync(childRecordDir, { recursive: true });
-
 // Copy distinct key art
 const vsdImages = path.join('packages', 'vsd-plugin', 'images');
 // useful_transcribe uses the plugin's own icon: there is no dedicated key art
@@ -46,11 +40,15 @@ const vsdImages = path.join('packages', 'vsd-plugin', 'images');
 
 // Copy REAL native OBS record images from installed plugin
 const nativeObsDir = 'C:/Program Files (x86)/VSD Craft/plugins/com.hotspot.streamdock.obsstudio.sdPlugin/Images/actions/record';
+// Flat, one level under Images/ — matching the host. Across the 153 profile
+// packages VSD Craft ships, the root Images/ directory holds 1074 files and
+// ZERO subdirectories, and no States[].Image value nests deeper than one
+// segment. The previous Images/actions/record/ layout had no host precedent.
 if (fs.existsSync(nativeObsDir)) {
-  fs.copyFileSync(path.join(nativeObsDir, 'on_N4pro.png'), path.join(topRecordDir, 'on.png'));
-  fs.copyFileSync(path.join(nativeObsDir, 'off_N4pro.png'), path.join(topRecordDir, 'off.png'));
-  fs.copyFileSync(path.join(nativeObsDir, 'on_N4pro.png'), path.join(childRecordDir, 'on.png'));
-  fs.copyFileSync(path.join(nativeObsDir, 'off_N4pro.png'), path.join(childRecordDir, 'off.png'));
+  [['on_N4pro.png', 'useful_record_on.png'], ['off_N4pro.png', 'useful_record_off.png']].forEach(([src, dest]) => {
+    fs.copyFileSync(path.join(nativeObsDir, src), path.join(topImagesDir, dest));
+    fs.copyFileSync(path.join(nativeObsDir, src), path.join(childImagesDir, dest));
+  });
 }
 
 // 1. Top-level Manifest - Actions MUST BE EMPTY!
@@ -68,7 +66,8 @@ const topManifest = {
 };
 fs.writeFileSync(path.join(targetProfileDir, 'manifest.json'), JSON.stringify(topManifest, null, 4), 'utf8');
 
-// 2. Child Page Manifest - Contains ONLY the 7 intended actions
+// 2. Child Page Manifest - Contains ONLY the 7 intended actions.
+// Shape must match what VSD Craft itself emits; see the key notes below.
 const childManifest = {
   Actions: {
     '0,1': {
@@ -84,7 +83,7 @@ const childManifest = {
       State: 0,
       States: [
         {
-          Image: 'Images/useful_audio_fix.png',
+          Image: 'useful_audio_fix.png',
           ShowTitle: false,
           Title: '',
           TitleAlignment: 'bottom'
@@ -97,15 +96,14 @@ const childManifest = {
       Controller: 'Keypad',
       Name: 'RECORD',
       Settings: {},
-      SoftwareSettings: {},
       State: 1,
       States: [
         {
-          Image: 'Images/actions/record/on.png',
+          Image: 'useful_record_on.png',
           Name: 'Start'
         },
         {
-          Image: 'Images/actions/record/off.png',
+          Image: 'useful_record_off.png',
           Name: 'Stop'
         }
       ],
@@ -119,7 +117,7 @@ const childManifest = {
       State: 0,
       States: [
         {
-          Image: 'Images/useful_imdb.png',
+          Image: 'useful_imdb.png',
           ShowTitle: false,
           Title: '',
           TitleAlignment: 'bottom'
@@ -135,7 +133,7 @@ const childManifest = {
       State: 0,
       States: [
         {
-          Image: 'Images/useful_cast.png',
+          Image: 'useful_cast.png',
           ShowTitle: false,
           Title: '',
           TitleAlignment: 'bottom'
@@ -151,7 +149,7 @@ const childManifest = {
       State: 0,
       States: [
         {
-          Image: 'Images/useful_justwatch.png',
+          Image: 'useful_justwatch.png',
           ShowTitle: false,
           Title: '',
           TitleAlignment: 'bottom'
@@ -167,7 +165,7 @@ const childManifest = {
       State: 0,
       States: [
         {
-          Image: 'Images/useful_reddit.png',
+          Image: 'useful_reddit.png',
           ShowTitle: false,
           Title: '',
           TitleAlignment: 'bottom'
@@ -183,7 +181,7 @@ const childManifest = {
       State: 0,
       States: [
         {
-          Image: 'Images/useful_transcribe.png',
+          Image: 'useful_transcribe.png',
           ShowTitle: false,
           Title: '',
           TitleAlignment: 'bottom'
@@ -192,12 +190,22 @@ const childManifest = {
       UUID: 'com.cmarabate.streamdock.streamdockbridge.transcribe'
     }
   },
-  Name: 'USEFUL v2'
+  // VSD Craft requires these on a PAGE manifest, not just the top-level one.
+  // Surveyed across every profile package shipped with VSD Craft 3.10.202.0702
+  // (153 packages, 341 page manifests): the page key set is invariably
+  // Actions/DeviceModel/DeviceUUID/Name/Version, and page Name is always "".
+  // Omitting the three device/version keys is why the importer silently
+  // discarded this package — it could not construct the page, and logged
+  // `Can not find profile "<page>.sdProfile" ... pathExists: true`.
+  DeviceModel: '20GBA9901',
+  DeviceUUID: 'VSDN4Pro',
+  Name: '',
+  Version: '1.0'
 };
 
 fs.writeFileSync(path.join(targetChildDir, 'manifest.json'), JSON.stringify(childManifest, null, 4), 'utf8');
 
-// Package single canonical import artifact USEFUL v2.StreamDockProfile
+// Package single canonical import artifact USEFUL v2.streamDockProfile
 //
 // PowerShell's Compress-Archive was used here previously and is the reason
 // VSD Craft could not read the package: it (a) mixes backslash and forward-
@@ -207,10 +215,23 @@ fs.writeFileSync(path.join(targetChildDir, 'manifest.json'), JSON.stringify(chil
 // writes an explicit forward-slash entry for every directory level. Windows'
 // built-in bsdtar (System32\tar.exe, libarchive) reproduces that exactly, so
 // use it instead of Compress-Archive — no new dependency required.
-const targetArtifact = 'USEFUL v2.StreamDockProfile';
-const staleZipVariant = 'USEFUL v2.sdProfile.zip'; // obsolete Compress-Archive intermediate; never write one again
+// Extension casing is load-bearing. VSD Craft.exe carries an accepted-suffix
+// table for SDProfileManager::importProfile containing BOTH "SDProfile" and
+// "sdprofile" as separate entries — a redundancy that only makes sense if the
+// comparison is case-sensitive — and every one of the 153 profile packages the
+// app ships is spelled `.streamDockProfile` (lowercase s, capital D, capital P).
+// A file named `.StreamDockProfile` matches nothing in that table, and the
+// importer returns without raising an error, which is exactly the silent no-op
+// the owner observed.
+const targetArtifact = 'USEFUL v2.streamDockProfile';
+const staleVariants = [
+  'USEFUL v2.StreamDockProfile', // wrong-cased name that VSD Craft silently ignored
+  'USEFUL v2.sdProfile.zip', // obsolete Compress-Archive intermediate; never write one again
+];
 if (fs.existsSync(targetArtifact)) fs.unlinkSync(targetArtifact);
-if (fs.existsSync(staleZipVariant)) fs.unlinkSync(staleZipVariant);
+for (const stale of staleVariants) {
+  if (fs.existsSync(stale) && stale !== targetArtifact) fs.unlinkSync(stale);
+}
 
 const bsdtar = 'C:\\Windows\\System32\\tar.exe';
 if (!fs.existsSync(bsdtar)) {
@@ -221,4 +242,4 @@ execSync(
   { stdio: 'inherit' }
 );
 
-console.log('Successfully created clean USEFUL v2 profile package & single canonical USEFUL v2.StreamDockProfile import artifact!');
+console.log('Successfully created clean USEFUL v2 profile package & single canonical USEFUL v2.streamDockProfile import artifact!');

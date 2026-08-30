@@ -5,7 +5,7 @@ import * as os from 'os';
 
 const repoRoot = process.cwd();
 const sourceProfileDir = path.resolve(repoRoot, 'USEFUL v2.sdProfile');
-const artifactPath = path.resolve(repoRoot, 'USEFUL v2.StreamDockProfile');
+const artifactPath = path.resolve(repoRoot, 'USEFUL v2.streamDockProfile');
 const bsdtar = 'C:\\Windows\\System32\\tar.exe';
 
 function getAllJsonFiles(dir: string): string[] {
@@ -109,8 +109,11 @@ function validateProfileDirectory(profileDir: string) {
     if (act.States && Array.isArray(act.States)) {
       for (const state of act.States) {
         if (state.Image) {
-          const imgPathChild = path.join(childPageDir, state.Image);
-          const imgPathTop = path.join(profileDir, state.Image);
+          // Package-local art is referenced by bare basename and resolves under
+          // Images/. An "Images/<name>" value would instead name an app built-in.
+          expect(state.Image).not.toContain('/');
+          const imgPathChild = path.join(childPageDir, 'Images', state.Image);
+          const imgPathTop = path.join(profileDir, 'Images', state.Image);
           const exists = fs.existsSync(imgPathChild) || fs.existsSync(imgPathTop);
           expect(exists).toBe(true);
         }
@@ -118,6 +121,115 @@ function validateProfileDirectory(profileDir: string) {
     }
   }
 }
+
+/**
+ * The shape VSD Craft itself emits.
+ *
+ * Established by surveying every profile package shipped with VSD Craft
+ * 3.10.202.0702 under defaultData/defaultProfiles: 153 packages, 341 page
+ * manifests, 2473 actions. The page key set below held for 341/341 with no
+ * exceptions, page Name was "" in 341/341, and SoftwareSettings appeared on
+ * 0/2473 actions.
+ *
+ * These assertions exist because the previous validator was self-referential:
+ * it checked the generator's output against expectations derived from that
+ * same generator, so a package that no host would accept still passed. The
+ * page manifest was missing DeviceModel/DeviceUUID/Version, VSD Craft could
+ * not construct the page, and the import was silently discarded with no error
+ * dialog — only a `Can not find profile "<page>.sdProfile" ... pathExists:
+ * true` line in its log.
+ */
+const HOST_PAGE_MANIFEST_KEYS = ['Actions', 'DeviceModel', 'DeviceUUID', 'Name', 'Version'];
+const HOST_ACTION_KEYS = ['ActionID', 'Controller', 'Name', 'Settings', 'State', 'States', 'UUID'];
+
+function validateHostPageContract(profileDir: string) {
+  const topManifest = JSON.parse(fs.readFileSync(path.join(profileDir, 'manifest.json'), 'utf8'));
+  const currentRel = topManifest.Pages?.Current;
+  const pageManifestPath = path.join(profileDir, 'profiles', currentRel, 'manifest.json');
+  const page = JSON.parse(fs.readFileSync(pageManifestPath, 'utf8'));
+
+  // Exact key set — extra or missing keys both fail.
+  expect(Object.keys(page).sort()).toEqual([...HOST_PAGE_MANIFEST_KEYS].sort());
+
+  // The page must name the same device as the profile, or the host cannot bind it.
+  expect(page.DeviceUUID).toBe(topManifest.DeviceUUID);
+  expect(page.DeviceModel).toBe(topManifest.DeviceModel);
+  expect(page.Version).toBe('1.0');
+  expect(page.Name).toBe('');
+
+  for (const [slot, action] of Object.entries<any>(page.Actions)) {
+    expect(Object.keys(action).sort()).toEqual([...HOST_ACTION_KEYS].sort());
+    // No host action carries this; it is not part of the accepted shape.
+    expect(action).not.toHaveProperty('SoftwareSettings');
+    expect(typeof action.UUID).toBe('string');
+    expect(action.UUID.length).toBeGreaterThan(0);
+    expect(slot).toMatch(/^-?\d+,-?\d+$/);
+
+    for (const state of action.States || []) {
+      if (!state.Image) continue;
+      // A package-local image is a bare basename; the host resolves it under
+      // Images/. Of 3973 host actions, 1757 use a bare basename and every
+      // "Images/<name>" value denotes an app built-in resource that is NOT a
+      // file in the package — all 18 such host values are absent from their own
+      // zips. Writing "Images/foo.png" therefore names a built-in that does not
+      // exist, and the key renders blank.
+      expect(state.Image).not.toContain('/');
+    }
+  }
+
+  // Same rule expressed against the tree itself, in both image locations.
+  for (const imagesDir of [
+    path.join(profileDir, 'Images'),
+    path.join(profileDir, 'profiles', currentRel, 'Images'),
+  ]) {
+    if (!fs.existsSync(imagesDir)) continue;
+    const subdirs = fs
+      .readdirSync(imagesDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+    expect(subdirs).toEqual([]);
+  }
+}
+
+describe('VSD Craft host page contract', () => {
+  it('the loose source profile matches the shape VSD Craft emits', () => {
+    validateHostPageContract(sourceProfileDir);
+  });
+
+  it('the packaged artifact matches the shape VSD Craft emits', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sdb-host-contract-'));
+    try {
+      execFileSync(bsdtar, ['-xf', artifactPath, '-C', dir], { stdio: 'ignore' });
+      validateHostPageContract(dir);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Cross-check against a real host package when one is present. Skipped rather
+   * than failed off this machine, since it depends on the VSD Craft install.
+   */
+  it('agrees with a profile package authored by VSD Craft itself', () => {
+    const hostPackage = path.join(
+      'C:/Program Files (x86)/VSD Craft/defaultData/defaultProfiles/VSDN4Pro/en',
+      'one.streamDockProfile'
+    );
+    if (!fs.existsSync(hostPackage)) return;
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sdb-host-sample-'));
+    try {
+      execFileSync(bsdtar, ['-xf', hostPackage, '-C', dir], { stdio: 'ignore' });
+      const top = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
+      const pageDir = path.join(dir, 'profiles', top.Pages.Current);
+      const page = JSON.parse(fs.readFileSync(path.join(pageDir, 'manifest.json'), 'utf8'));
+      expect(Object.keys(page).sort()).toEqual([...HOST_PAGE_MANIFEST_KEYS].sort());
+      expect(page.Name).toBe('');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('USEFUL v2 Strict Recursive Profile Validation', () => {
   it('profile directory, top-level manifest.json, and canonical import package exist', () => {
@@ -131,7 +243,7 @@ describe('USEFUL v2 Strict Recursive Profile Validation', () => {
   });
 });
 
-describe('USEFUL v2.StreamDockProfile packaged artifact', () => {
+describe('USEFUL v2.streamDockProfile packaged artifact', () => {
   let extractedDir: string;
 
   beforeAll(() => {
@@ -145,6 +257,18 @@ describe('USEFUL v2.StreamDockProfile packaged artifact', () => {
 
   afterAll(() => {
     if (extractedDir) fs.rmSync(extractedDir, { recursive: true, force: true });
+  });
+
+  /**
+   * VSD Craft.exe's accepted-suffix table for SDProfileManager::importProfile
+   * lists "SDProfile" and "sdprofile" as separate entries, which is only
+   * necessary if the suffix comparison is case-sensitive; all 153 packages it
+   * ships are spelled `.streamDockProfile`. A `.StreamDockProfile` file matched
+   * nothing and the importer returned silently, with no error dialog.
+   */
+  it('is named with the exact extension casing the importer accepts', () => {
+    expect(path.basename(artifactPath).endsWith('.streamDockProfile')).toBe(true);
+    expect(path.basename(artifactPath)).not.toContain('.StreamDockProfile');
   });
 
   it('is a real zip archive with no backslash-separated entries', () => {
