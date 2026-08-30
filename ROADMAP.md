@@ -367,7 +367,7 @@ instances on the N4 Pro and confirmed:
 
 That last point is the product criterion this slice existed to satisfy.
 
-### Auto Website Icons for Context URL — `DONE` / `VERIFIED AUTOMATED` + `VERIFIED RUNTIME` / `WAITING PHYSICAL TESTING`
+### Auto Website Icons for Context URL — `DONE` / **`VERIFIED PHYSICAL`** (one open quality defect)
 
 Context URL configures itself visually: paste a template, and the site's own icon appears
 on the key. One reusable action, no per-site artwork.
@@ -525,8 +525,17 @@ automated tests and by cold-cache verification against ten live sites, and the f
 individually described above — but that re-review remains outstanding work, not a
 completed gate.
 
-**Physical acceptance is still outstanding** — the owner has not yet confirmed the icons on
-the N4 Pro hardware itself. Everything above is host-rendered and agent-observed.
+**Physically accepted by the owner on 2026-08-30**, at
+`db99cb7be959224a759012497949d9a8f7b35bea`. The owner tested on the N4 Pro and confirmed:
+
+- automatic website icons function on the real hardware;
+- Context URL key behaviour remains correct alongside them.
+
+**One quality defect remains open.** The owner reports the **ReelGood icon is visibly
+blurry**, and the supplied screenshot shows it already blurry in the Property Inspector
+preview — so this is an asset-selection defect, not N4 display scaling. The owner did not
+report any other icon as poor, and no claim is made here about how any other individual
+image looked. Tracked below.
 
 ### Phase 2B — AgentOS Safe Hardware-Action Contract — `PLANNED` (design agreed, not implemented)
 
