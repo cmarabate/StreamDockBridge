@@ -686,6 +686,65 @@ has not been exercised in the live Property Inspector — the workstation was in
 and the host window could not be driven reliably. Runtime and physical confirmation are
 outstanding.
 
+### Project-aware Context URL — `INVESTIGATION` (complete) / `BLOCKED` on current-project detection
+
+The goal: the same physical GITHUB / VERCEL / SUPABASE keys open whichever project the
+owner is currently working in, without one key per project. Research is done and the
+architecture is settled. **It is not implemented, and one piece is genuinely missing.**
+
+**Project identity belongs to AgentOS, and StreamDockBridge must not duplicate it.**
+`D:\_Dev\Apps\AgentOS\.agent-os\state\project-registry.json` (schema
+`project-registry-state-1`, 22 entries) is the canonical catalog. Each entry carries
+`registryKey` (the canonical id — the `id` UUID is explicitly provenance, *not* identity),
+`name`, `aliases`, `localRepoPath`, `githubRepo` as `owner/repo`, and `repoLess`. Access is
+by file read or the read-only CLI `aos:project-registry:read --state <path> --json`;
+nothing is served over a socket, and neither running AgentOS server (4799, 8787) exposes
+project identity at all.
+
+Crucially, the registry **already models the ChatGPT link**: IdeaForge's entry carries
+`aliases: ["ChatGPT: IdeaForge"]`. The mapping from a ChatGPT Project name to a project is
+AgentOS's, not something to invent here.
+
+**Web targets are NOT in AgentOS, by explicit doctrine.** The contract document lists what
+the registry may hold and states it is *identity metadata only*. There is no Vercel field,
+no Supabase field, no production URL: zero occurrences of `vercel` anywhere in AgentOS's
+source or state, and its single Supabase connection is AgentOS's own backend rather than
+per-project metadata. `relatedDomains: string[]` exists as the sanctioned extension point
+and is empty for all 22 entries.
+
+So the split is:
+
+- **identity** → read AgentOS (never duplicate it);
+- **web targets** → derive from the repo, because no canonical source exists:
+  `.vercel/project.json` gives `orgId`/`projectId`, a `SUPABASE_URL` subdomain gives the
+  project ref, `vercel.json`/`CNAME` hint at a production domain. Verified present across
+  the owner's projects — e.g. adhdeploy and shroommaps both have `.vercel/project.json`,
+  and the Vercel team is the same for all deployed projects.
+
+**The blocker.** AgentOS is a **catalog, not a runtime focus tracker** — it can answer
+"what projects exist" and never "which project is the user in right now". Its
+`currentProjectId` is computed from roadmap slice ordering, not from the owner's activity.
+So the current-project signal has to come from the browser, and the only proposed source is
+the ChatGPT Project a conversation belongs to.
+
+**That extraction contract is unproven.** Establishing it needs live inspection of a
+logged-in ChatGPT Project page to find a stable identifier — URL, a durable data attribute,
+or accessible DOM — that is not a transient CSS class and not merely a thread title that
+happens to mention a project name. That inspection was not performed: it requires driving
+the owner's authenticated browser session, and the workstation was in active use.
+
+**Nothing was implemented on guesswork.** No project placeholders, no project presets, no
+project keys. Implementing `{githubOwner}` and friends before the current-project signal is
+proven would produce keys that silently open the wrong project's repository, which is worse
+than not having them. Two further design decisions are already settled for when it
+unblocks: a missing association must `showAlert` rather than substitute empty text, and
+project context must carry no keys, tokens or connection strings — only public dashboard
+identifiers.
+
+**Also noted:** StreamDockBridge is absent from both AgentOS registries and has no
+`.vercel/`, `supabase/`, `.env` or `.agent-os/` of its own, so it would need registering
+before it could resolve as a project.
+
 ### Phase 2B — AgentOS Safe Hardware-Action Contract — `PLANNED` (design agreed, not implemented)
 
 No button is wired to AgentOS. This section is the contract that must hold before one is.
