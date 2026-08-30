@@ -204,14 +204,102 @@ carries a seventh control, **TRANSCRIBE** at slot `1,2`, generated through
 AUDIO FIX controls are unchanged. It reuses the plugin's own icon, since no dedicated
 key art exists for it yet.
 
-### Phase 2B — AgentOS Safe Hardware-Action Contract — `INVESTIGATION`
+### Phase 2B — AgentOS Safe Hardware-Action Contract — `PLANNED` (design agreed, not implemented)
 
-AgentOS exposes a live loopback control service whose only authentication is a single
-fixed, public header value. Its `queue-to-run` route is idempotent by design, but its
-body is a task packet bound to persisted ledger lineage — a button can replay such a
-packet but cannot construct one. The running instance has its background reconciler
-armed, so admission causes real dispatch; the source records a 2026-08-23 production
-incident in which that path dispatched an unintended historical intent.
+No button is wired to AgentOS. This section is the contract that must hold before one is.
 
-A safe hardware-action contract must therefore be designed before any button is wired to
-AgentOS. Not authorized for implementation.
+#### Why AgentOS is not TranscriptForge
+
+Phase 2A was safe to build because TranscriptForge's enqueue is self-contained and
+idempotent on the URL, and its worst outcome is a dead job row. None of that transfers.
+
+`POST /api/ideaforge-intake/queue-to-run` creates execution lineage, and the running
+instance has its background reconciler **armed**, so admission leads to real dispatch to
+a real runner. Its body is a task packet validated against `capturedItemId`,
+`repositoryId`, `taskId`, `workItemId` and persisted ledger lineage — a button can
+*replay* such a packet but can never construct one. And the source records a
+**2026-08-23 production incident** in which a constrained canary released a blocked lane
+head, the shared repository lane advanced, and a non-target historical intent was
+dispatched and given a TL-4 authorization.
+
+So "press equals dispatch" is not an option, and mapping a key onto `queue-to-run` is
+explicitly rejected.
+
+#### The boundary: hardware intents, not commands
+
+The device emits an **intent name from a closed enum**. No payload, no identifiers, no
+path, no method — the same shape that made Phase 2A defensible, applied to a downstream
+where the stakes are higher.
+
+Ownership is explicit and one-way:
+
+- The **device** owns nothing but "this key was pressed".
+- The **bridge service** owns the intent → (AgentOS path, method, resolved target) map,
+  and is the only component permitted to speak to AgentOS.
+- **AgentOS remains the workflow authority.** The bridge never stores workflow truth,
+  never re-derives lane order, never invents lineage, and never becomes a competing
+  source of dispatch state.
+
+#### Intent set
+
+| Intent | Kind | AgentOS surface |
+| --- | --- | --- |
+| `agentos.status` | read-only | `GET /health`, `GET /api/ideaforge-intake/queue-lanes` |
+| `agentos.pending-count` | read-only | `GET /api/ideaforge-intake/operator-actions` |
+| `agentos.confirm-armed-item` | **mutating, gated** | preview then `POST /api/ideaforge-intake/queue-to-run` |
+
+The two read-only intents ship and reach physical acceptance **first**. The mutating
+intent is not built until they have.
+
+Never reachable from a key, and absent from both the enum and the path allowlist:
+`POST /api/ideaforge-intake/queue-lanes/reorder` (silently reprioritizes operator-visible
+work) and `POST /api/ideaforge-intake/operator-action-response` (answers a human decision
+on the operator's behalf).
+
+#### Arming is out-of-band; the button only confirms
+
+A single press must never select *and* admit. The work item is armed elsewhere — the
+IdeaForge side panel or the AgentOS CLI — producing an arm record the bridge can read.
+The key confirms what a human already chose. With nothing armed the action refuses with
+`nothing_armed` and makes no AgentOS call at all.
+
+#### Target resolution
+
+The device never names a target. For the mutating intent the service must:
+
+1. resolve candidates from AgentOS's own read routes, never from device input;
+2. require **exactly one** armed candidate, else refuse `ambiguous_target`;
+3. preview it write-free via `GET /api/ideaforge-intake/queued-work-plan?workItemId=…`,
+   which AgentOS documents as write-free by construction, before any admission.
+
+#### Replay and duplicate protection
+
+- The arm record carries a token with a **short expiry** (~120 s). Expired → refuse.
+- The service remembers the last confirmed token. Re-presenting it is a no-op success
+  (`already_confirmed`), never a second admission. Key-mashing cannot fan out.
+- Immediately before admitting, the write-free preview is re-run and must still match the
+  armed snapshot — `workItemId`, `repositoryId`, and lane head. Any drift refuses with
+  `target_drifted`. **This is the specific guard against the 2026-08-23 failure mode**,
+  where the lane advanced between decision and dispatch.
+- A per-intent cooldown bounds press frequency.
+- AgentOS's own `already_admitted` response is treated as success, matching its documented
+  idempotency, so a retry after a lost response cannot double-admit.
+
+#### Authentication
+
+AgentOS's only auth is a fixed, public header value — it is not a boundary and must not be
+treated as one. The real gate is the bridge's existing `X-Bridge-Secret`, exactly as in
+Phase 2A.
+
+#### Feedback
+
+`showOk` on `confirmed` and `already_confirmed`; `showAlert` on every refusal; a brief
+title naming the refusal category (`nothing_armed`, `ambiguous_target`, `target_drifted`,
+`expired`). A mutating intent is **never** auto-retried.
+
+#### Acceptance staging
+
+- **2B.1** — read-only intents: automated, then runtime, then physical.
+- **2B.2** — confirm intent: automated and runtime against a disposable AgentOS state
+  root if one can be stood up; otherwise a single owner-supervised confirm. Not started
+  until 2B.1 is `VERIFIED PHYSICAL`.
