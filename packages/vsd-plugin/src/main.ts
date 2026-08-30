@@ -42,9 +42,28 @@ async function handleMessage(msgStr: string) {
 
     if (event === 'keyDown') {
       const actionUuid = action || '';
-      const result = await handlePluginKeyDown(context, actionUuid, undefined, sendAlert);
+      /**
+       * The host sends this key instance's own configuration in
+       * payload.settings, keyed by slot in the profile, so no local cache is
+       * needed and two keys with the same action never share configuration.
+       * Note the asymmetry with setSettings, which puts settings at payload root.
+       */
+      const settings = data && data.payload ? data.payload.settings : undefined;
+      const result = await handlePluginKeyDown(
+        context,
+        actionUuid,
+        undefined,
+        sendAlert,
+        undefined,
+        settings
+      );
 
       // handlePluginKeyDown already alerts on failure; success feedback is ours.
+      if (result.route === 'contexturl' && result.success) {
+        // The browser navigating is the visible outcome; keep feedback minimal.
+        showOk(context);
+      }
+
       if (result.route === 'transcribe') {
         if (result.success) {
           showOk(context);

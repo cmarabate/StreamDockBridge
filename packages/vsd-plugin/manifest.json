@@ -59,6 +59,19 @@
       "SupportedInMultiActions": true,
       "Tooltip": "Send the current tab to TranscriptForge for transcription",
       "UUID": "com.cmarabate.streamdock.streamdockbridge.transcribe"
+    },
+    {
+      "Icon": "images/icon",
+      "Name": "Context URL",
+      "PropertyInspectorPath": "propertyInspector/contextUrl.html",
+      "States": [
+        {
+          "Image": "images/icon"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Open a URL template filled in from the current browser page",
+      "UUID": "com.cmarabate.streamdock.streamdockbridge.contexturl"
     }
   ],
   "Author": "cmarabate",

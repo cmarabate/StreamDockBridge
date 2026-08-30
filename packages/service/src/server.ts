@@ -3,12 +3,13 @@ import { parse as parseUrl } from 'url';
 import { SecretStore } from './secretStore';
 import { contextStore, ContextRecord } from './contextStore';
 import { deriveCanonicalTitle } from './titleCleaner';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import {
   enqueueTranscription,
   isSupportedTranscriptionUrl,
   DownstreamRequester,
 } from './transcriptForge';
+import { resolveUrlTemplate, placeholderValuesFrom } from './urlTemplate';
 
 export interface BridgeServerOptions {
   port?: number;
@@ -50,8 +51,23 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
   let launcher: (url: string) => void =
     options.launcher ??
     ((urlToLaunch: string) => {
-      const safeUrl = urlToLaunch.replace(/"/g, '\\"');
-      exec(`start "" "${safeUrl}"`);
+      /**
+       * No shell at all.
+       *
+       * This previously ran `exec('start "" "<url>"')`, which goes through cmd,
+       * where a double quote ends the quoted argument and `\"` is NOT an escape
+       * — so the backslash escaping that was here did nothing, and a template
+       * of `https://example.com/?q="&&calc.exe&&"` parsed as a valid URL and
+       * broke out into a command. Context URL is what first let arbitrary
+       * template text reach this call.
+       *
+       * execFile passes the URL as a single argv entry to ShellExecute via
+       * rundll32, so there is no command line for it to escape from and no
+       * quoting rules to get wrong. The refusal below is belt-and-braces: the
+       * URL arrives already normalized by validateResolvedUrl.
+       */
+      if (urlToLaunch.includes('"')) return;
+      execFile('rundll32.exe', ['url.dll,FileProtocolHandler', urlToLaunch], () => undefined);
     });
 
   const server = http.createServer((req, res) => {
@@ -154,36 +170,111 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
       return;
     }
 
-    const handleLookup = (action: string, urlBuilder: (q: string) => string) => {
+    /**
+     * The built-in lookups are presets: fixed templates run through the same
+     * resolver the configurable Context URL action uses, so there is one
+     * template authority rather than two. The literal %20 in the cast preset
+     * preserves its existing destination byte-for-byte.
+     */
+    const handleLookup = (action: string, template: string) => {
       const current = contextStore.getContext();
       if (!current || !current.canonicalTitle) {
         sendJson(400, { success: false, error: 'no_usable_context' });
         return;
       }
 
-      const query = current.canonicalTitle;
-      const targetUrl = urlBuilder(encodeURIComponent(query));
-      launcher(targetUrl);
-      sendJson(200, { success: true, action, query, url: targetUrl, launched: true });
+      const result = resolveUrlTemplate(template, placeholderValuesFrom(current));
+      if (!result.ok) {
+        sendJson(result.status, { success: false, error: result.error });
+        return;
+      }
+
+      launcher(result.url);
+      sendJson(200, {
+        success: true,
+        action,
+        query: current.canonicalTitle,
+        url: result.url,
+        launched: true,
+      });
     };
 
     if (req.method === 'POST' && pathname === '/lookup/imdb') {
-      handleLookup('imdb', (q) => `https://www.imdb.com/find?q=${q}`);
+      handleLookup('imdb', 'https://www.imdb.com/find?q={title}');
       return;
     }
 
     if (req.method === 'POST' && pathname === '/lookup/cast') {
-      handleLookup('cast', (q) => `https://www.google.com/search?q=${q}%20cast`);
+      handleLookup('cast', 'https://www.google.com/search?q={title}%20cast');
       return;
     }
 
     if (req.method === 'POST' && pathname === '/lookup/justwatch') {
-      handleLookup('justwatch', (q) => `https://www.justwatch.com/us/search?q=${q}`);
+      handleLookup('justwatch', 'https://www.justwatch.com/us/search?q={title}');
       return;
     }
 
     if (req.method === 'POST' && pathname === '/lookup/reddit') {
-      handleLookup('reddit', (q) => `https://www.reddit.com/search/?q=${q}`);
+      handleLookup('reddit', 'https://www.reddit.com/search/?q={title}');
+      return;
+    }
+
+    /**
+     * Context URL: open a user-configured template against the current page.
+     *
+     * The caller supplies ONLY the template. Every value substituted into it
+     * comes from this service's own browser context, so a key cannot carry a
+     * stale copy of the media title or name a value the context does not hold.
+     *
+     * Behind the secret gate because the template is caller-supplied. This is a
+     * browser-navigation primitive: nothing here fetches the URL.
+     */
+    if (req.method === 'POST' && pathname === '/lookup/custom') {
+      if (!isAllowedOrigin(origin, allowAnyExtension)) {
+        sendJson(403, { success: false, error: 'origin_forbidden' });
+        return;
+      }
+
+      const clientSecret = req.headers['x-bridge-secret'];
+      if (!secretStore.verifySecret(clientSecret as string | undefined)) {
+        sendJson(401, { success: false, error: 'unauthorized' });
+        return;
+      }
+
+      let body = '';
+      req.on('data', (chunk) => {
+        body += chunk;
+      });
+
+      req.on('end', () => {
+        let template: unknown;
+        try {
+          template = JSON.parse(body)?.template;
+        } catch (e) {
+          sendJson(400, { success: false, error: 'invalid_json' });
+          return;
+        }
+
+        if (typeof template !== 'string') {
+          sendJson(400, { success: false, error: 'empty_template' });
+          return;
+        }
+
+        const current = contextStore.getCurrentRecord();
+        if (!current) {
+          sendJson(400, { success: false, error: 'no_usable_context' });
+          return;
+        }
+
+        const result = resolveUrlTemplate(template, placeholderValuesFrom(current));
+        if (!result.ok) {
+          sendJson(result.status, { success: false, error: result.error });
+          return;
+        }
+
+        launcher(result.url);
+        sendJson(200, { success: true, action: 'custom', resolvedUrl: result.url });
+      });
       return;
     }
 

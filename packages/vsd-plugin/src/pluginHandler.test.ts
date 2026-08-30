@@ -1,4 +1,4 @@
-﻿import { handlePluginKeyDown, resolveLookupRoute, HttpRequester } from './pluginHandler';
+﻿import { handlePluginKeyDown, resolveLookupRoute, HttpRequester, TranscribeRequester } from './pluginHandler';
 
 describe('VSD Plugin Transport Handler', () => {
   it('triggers POST for IMDb action', async () => {
@@ -161,5 +161,134 @@ describe('action routing cannot be widened by UUID suffix', () => {
 
     expect(res).toEqual({ route: null, success: false });
     expect(alerted).toEqual(['ctx-u']);
+  });
+});
+
+describe('Context URL action', () => {
+  const CONTEXT_URL = 'com.cmarabate.streamdock.streamdockbridge.contexturl';
+
+  const lookupShouldNotRun: HttpRequester = async () => {
+    throw new Error('lookup requester must not be used for the context url action');
+  };
+  const transcribeShouldNotRun: TranscribeRequester = async () => {
+    throw new Error('transcribe requester must not be used for the context url action');
+  };
+
+  it('sends the key instance template and nothing else', async () => {
+    const sent: string[] = [];
+    const res = await handlePluginKeyDown(
+      'ctx',
+      CONTEXT_URL,
+      lookupShouldNotRun,
+      undefined,
+      transcribeShouldNotRun,
+      { urlTemplate: 'https://www.youtube.com/results?search_query={title}+trailer' },
+      async (template) => {
+        sent.push(template);
+        return { statusCode: 200, success: true, resolvedUrl: 'https://example.com/resolved' };
+      }
+    );
+
+    expect(sent).toEqual(['https://www.youtube.com/results?search_query={title}+trailer']);
+    expect(res).toEqual({
+      route: 'contexturl',
+      success: true,
+      resolvedUrl: 'https://example.com/resolved',
+    });
+  });
+
+  /**
+   * The critical product requirement: the host hands each key its own
+   * payload.settings, so two keys carrying the same action UUID never share
+   * configuration and one cannot be changed by editing the other.
+   */
+  it('keeps two instances of the same action independent', async () => {
+    const sent: Array<{ context: string; template: string }> = [];
+    const requester = (context: string) => async (template: string) => {
+      sent.push({ context, template });
+      return { statusCode: 200, success: true, resolvedUrl: 'https://example.com/x' };
+    };
+
+    await handlePluginKeyDown('key-A', CONTEXT_URL, lookupShouldNotRun, undefined,
+      transcribeShouldNotRun,
+      { urlTemplate: 'https://www.rottentomatoes.com/search?search={title}' },
+      requester('key-A'));
+
+    await handlePluginKeyDown('key-B', CONTEXT_URL, lookupShouldNotRun, undefined,
+      transcribeShouldNotRun,
+      { urlTemplate: 'https://www.youtube.com/results?search_query={title}+trailer' },
+      requester('key-B'));
+
+    expect(sent).toEqual([
+      { context: 'key-A', template: 'https://www.rottentomatoes.com/search?search={title}' },
+      { context: 'key-B', template: 'https://www.youtube.com/results?search_query={title}+trailer' },
+    ]);
+
+    // Pressing A again still sends A's template — B did not leak into it.
+    await handlePluginKeyDown('key-A', CONTEXT_URL, lookupShouldNotRun, undefined,
+      transcribeShouldNotRun,
+      { urlTemplate: 'https://www.rottentomatoes.com/search?search={title}' },
+      requester('key-A'));
+    expect(sent[2].template).toBe('https://www.rottentomatoes.com/search?search={title}');
+  });
+
+  it('alerts without calling the service when no template is configured', async () => {
+    const alerted: string[] = [];
+    const requester = async () => {
+      throw new Error('must not reach the service');
+    };
+
+    for (const settings of [undefined, {}, { urlTemplate: '' }, { urlTemplate: '   ' }, { urlTemplate: 42 }]) {
+      const res = await handlePluginKeyDown(
+        'ctx-empty',
+        CONTEXT_URL,
+        lookupShouldNotRun,
+        (c) => alerted.push(c),
+        transcribeShouldNotRun,
+        settings as any,
+        requester
+      );
+      expect(res).toEqual({ route: 'contexturl', success: false });
+    }
+    expect(alerted).toHaveLength(5);
+  });
+
+  it('alerts when the service rejects the template', async () => {
+    const alerted: string[] = [];
+    const res = await handlePluginKeyDown(
+      'ctx-bad',
+      CONTEXT_URL,
+      lookupShouldNotRun,
+      (c) => alerted.push(c),
+      transcribeShouldNotRun,
+      { urlTemplate: 'javascript:alert(1)' },
+      async () => ({ statusCode: 400, success: false })
+    );
+
+    expect(res.success).toBe(false);
+    expect(alerted).toEqual(['ctx-bad']);
+  });
+
+  it('does not collide with the other actions', async () => {
+    expect(resolveLookupRoute(CONTEXT_URL)).toBeNull();
+
+    // The lookup actions still dispatch to the lookup requester.
+    const routes: string[] = [];
+    const res = await handlePluginKeyDown(
+      'ctx',
+      'com.cmarabate.streamdock.streamdockbridge.imdb',
+      async (route) => {
+        routes.push(route);
+        return { statusCode: 200, success: true };
+      },
+      undefined,
+      transcribeShouldNotRun,
+      { urlTemplate: 'https://example.com/should-be-ignored' },
+      async () => {
+        throw new Error('context url requester must not run for imdb');
+      }
+    );
+    expect(routes).toEqual(['imdb']);
+    expect(res.route).toBe('imdb');
   });
 });

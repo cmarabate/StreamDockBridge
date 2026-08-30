@@ -12,6 +12,7 @@ export const ROUTE_MAP: ActionMap = {
 };
 
 export const TRANSCRIBE_ACTION_UUID = 'com.cmarabate.streamdock.streamdockbridge.transcribe';
+export const CONTEXT_URL_ACTION_UUID = 'com.cmarabate.streamdock.streamdockbridge.contexturl';
 
 export const BRIDGE_ORIGIN = 'http://127.0.0.1:17337';
 
@@ -37,10 +38,25 @@ export interface TranscribeResponse {
 
 export type TranscribeRequester = () => Promise<TranscribeResponse>;
 
+export interface ContextUrlResponse {
+  statusCode: number;
+  success: boolean;
+  resolvedUrl?: string;
+}
+
+/** Sends only the template; every value substituted into it comes from the service. */
+export type ContextUrlRequester = (template: string) => Promise<ContextUrlResponse>;
+
+/** The per-key configuration the host hands us at keyDown. */
+export interface ActionSettings {
+  urlTemplate?: unknown;
+}
+
 export interface KeyDownResult {
   route: string | null;
   success: boolean;
   state?: TranscribeState;
+  resolvedUrl?: string;
 }
 
 /**
@@ -108,12 +124,20 @@ let cachedSecret: string | null = null;
 
 function postJson(
   path: string,
-  headers: Record<string, string>
+  headers: Record<string, string>,
+  payload?: string
 ): Promise<{ statusCode: number; body: string }> {
   return new Promise((resolve) => {
     const req = http.request(
       `${BRIDGE_ORIGIN}${path}`,
-      { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers } },
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(payload === undefined ? {} : { 'Content-Length': Buffer.byteLength(payload) }),
+          ...headers,
+        },
+      },
       (res) => {
         let body = '';
         res.on('data', (chunk) => { body += chunk; });
@@ -127,6 +151,7 @@ function postJson(
       req.destroy(new Error('bridge timeout'));
     });
     req.on('error', () => resolve({ statusCode: 0, body: '' }));
+    if (payload !== undefined) req.write(payload);
     req.end();
   });
 }
@@ -181,13 +206,62 @@ export const defaultTranscribeRequester: TranscribeRequester = async () => {
   }
 };
 
+export const defaultContextUrlRequester: ContextUrlRequester = async (template: string) => {
+  const attempt = async (secret: string) =>
+    postJson('/lookup/custom', { 'X-Bridge-Secret': secret }, JSON.stringify({ template }));
+
+  let secret = await getSecret();
+  if (!secret) return { statusCode: 401, success: false };
+
+  let res = await attempt(secret);
+  if (res.statusCode === 401) {
+    secret = await getSecret(true);
+    if (!secret) return { statusCode: 401, success: false };
+    res = await attempt(secret);
+  }
+
+  if (res.statusCode !== 200) return { statusCode: res.statusCode, success: false };
+
+  try {
+    const parsed = JSON.parse(res.body);
+    return {
+      statusCode: res.statusCode,
+      success: parsed?.success === true,
+      resolvedUrl: typeof parsed?.resolvedUrl === 'string' ? parsed.resolvedUrl : undefined,
+    };
+  } catch (e) {
+    return { statusCode: res.statusCode, success: false };
+  }
+};
+
 export async function handlePluginKeyDown(
   context: string,
   actionUuid: string,
   requester: HttpRequester = defaultHttpRequester,
   sendAlert?: (context: string) => void,
-  transcribeRequester: TranscribeRequester = defaultTranscribeRequester
+  transcribeRequester: TranscribeRequester = defaultTranscribeRequester,
+  settings: ActionSettings | undefined = undefined,
+  contextUrlRequester: ContextUrlRequester = defaultContextUrlRequester
 ): Promise<KeyDownResult> {
+  if (actionUuid === CONTEXT_URL_ACTION_UUID || actionUuid.endsWith('.contexturl')) {
+    /**
+     * The key owns only the template. Everything substituted into it is read
+     * by the service from its own browser context, so a key can never carry a
+     * stale copy of the media title.
+     */
+    const template = settings && typeof settings.urlTemplate === 'string' ? settings.urlTemplate : '';
+    if (!template.trim()) {
+      if (sendAlert) sendAlert(context);
+      return { route: 'contexturl', success: false };
+    }
+
+    const result = await contextUrlRequester(template);
+    if (!result.success && sendAlert) {
+      sendAlert(context);
+    }
+    return { route: 'contexturl', success: result.success, resolvedUrl: result.resolvedUrl };
+  }
+
   if (actionUuid === TRANSCRIBE_ACTION_UUID || actionUuid.endsWith('.transcribe')) {
     const result = await transcribeRequester();
     if (!result.success && sendAlert) {

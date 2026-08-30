@@ -10,7 +10,7 @@
     "verify:build": "yarn build",
     "verify:ts": "yarn typecheck",
     "verify:lint": "yarn lint",
-    "build": "tsc -b",
+    "build": "yarn workspaces run build",
     "typecheck": "tsc -b --noEmit",
     "lint": "eslint \"packages/*/src/**/*.ts\""
   },

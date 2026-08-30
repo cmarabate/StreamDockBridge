@@ -304,6 +304,58 @@ carries a seventh control, **TRANSCRIBE** at slot `1,2`, generated through
 AUDIO FIX controls are unchanged. It reuses the plugin's own icon, since no dedicated
 key art exists for it yet.
 
+### Context URL template primitive — `DONE` / `VERIFIED AUTOMATED` + `VERIFIED RUNTIME` / `WAITING PHYSICAL TESTING`
+
+The four built-in lookups revealed the general primitive. Rather than adding a hard-coded
+action per site, one configurable action carries a URL template and fills it from the
+current browser context.
+
+```
+N4 key (its own urlTemplate)
+  → VSD plugin
+    → authenticated POST /lookup/custom   { "template": "..." }
+      → service reads its OWN browser context
+        → approved placeholders substituted and percent-encoded
+          → resolved URL validated
+            → browser opens it
+```
+
+**Action:** `Context URL`, UUID `com.cmarabate.streamdock.streamdockbridge.contexturl`,
+Property Inspector at `propertyInspector/contextUrl.html`.
+
+**Settings schema:** exactly one key, `urlTemplate: string`. Title and icon are the host's
+own generic controls and are deliberately not duplicated.
+
+**Placeholders:** `{title}` (the existing canonicalTitle authority — no second title
+cleaner exists), `{rawTitle}`, `{url}`, `{hostname}`. Not an expression language: no
+property paths, no function calls, no arbitrary names. An unknown placeholder is a
+configuration error, never a silent pass-through.
+
+**Security.** Only `http:` and `https:` resolve; every other scheme, malformed URL and
+credential-bearing URL is refused, and nothing is opened on refusal. The service never
+fetches the URL — it hands a validated destination to the existing browser-open path.
+The caller supplies only the template; every substituted value comes from the service's
+own context, so a key cannot carry a stale media title or name a value the context does
+not hold. The route sits behind the existing `X-Bridge-Secret` gate.
+
+**Per-instance settings.** The host stores each key's settings in the page manifest under
+`Actions["<col>,<row>"].Settings` and hands them to the plugin in `payload.settings` at
+keyDown. The plugin keeps no cache, so instances cannot share or overwrite one another.
+Verified against the host's own store, where a shipped third-party plugin already keeps
+four same-UUID slots with differing settings.
+
+**Built-ins are now presets** on the same resolver — `{title}` templates with their
+destinations unchanged byte-for-byte, including CAST's literal `%20cast`. Their UUIDs,
+routes and profile bindings are untouched, so no profile migration is needed.
+
+Runtime-proven: two templates resolved independently against the same live context to
+`youtube.com/results?search_query=Gary%20and%20His%20Demons+trailer` and
+`rottentomatoes.com/search?search=Gary%20and%20His%20Demons`. VSD Craft registered the
+action in its own catalog (`StreamDockConfig.ini`), and the Property Inspector was driven
+through the host's real bootstrap contract.
+
+Outstanding: the owner dragging the action onto keys and pressing them.
+
 ### Phase 2B — AgentOS Safe Hardware-Action Contract — `PLANNED` (design agreed, not implemented)
 
 No button is wired to AgentOS. This section is the contract that must hold before one is.

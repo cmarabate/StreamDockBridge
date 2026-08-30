@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Context URL</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #2d2d2d;
+        --fg: #d8d8d8;
+        --muted: #9a9a9a;
+        --field: #3d3d3d;
+        --border: #4f4f4f;
+        --accent: #0078ff;
+        --bad: #ff6b6b;
+        --good: #6bd18a;
+      }
+      body {
+        margin: 0;
+        padding: 12px;
+        background: var(--bg);
+        color: var(--fg);
+        font: 13px/1.45 "Segoe UI", system-ui, sans-serif;
+      }
+      label {
+        display: block;
+        font-weight: 600;
+        margin-bottom: 6px;
+      }
+      input[type="text"] {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 7px 8px;
+        background: var(--field);
+        color: var(--fg);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        font: inherit;
+      }
+      input[type="text"]:focus {
+        outline: none;
+        border-color: var(--accent);
+      }
+      input.invalid {
+        border-color: var(--bad);
+      }
+      .status {
+        min-height: 16px;
+        margin-top: 6px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .status.error {
+        color: var(--bad);
+      }
+      .status.ok {
+        color: var(--good);
+      }
+      .hint {
+        margin-top: 14px;
+        padding-top: 10px;
+        border-top: 1px solid var(--border);
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .hint b {
+        color: var(--fg);
+        font-weight: 600;
+      }
+      code {
+        background: var(--field);
+        border-radius: 3px;
+        padding: 1px 5px;
+        font-family: Consolas, monospace;
+        color: var(--fg);
+      }
+      ul {
+        margin: 6px 0 0;
+        padding-left: 18px;
+      }
+      li {
+        margin: 3px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <label for="urlTemplate">URL Template</label>
+    <input
+      id="urlTemplate"
+      type="text"
+      spellcheck="false"
+      autocomplete="off"
+      placeholder="https://www.youtube.com/results?search_query={title}+trailer"
+    />
+    <div id="status" class="status"></div>
+
+    <div class="hint">
+      <b>Available placeholders</b>
+      <ul>
+        <li><code>{title}</code> — cleaned work title, e.g. <em>Gary and His Demons</em></li>
+        <li><code>{rawTitle}</code> — full page title as the browser reports it</li>
+        <li><code>{url}</code> — current page URL</li>
+        <li><code>{hostname}</code> — current page hostname</li>
+      </ul>
+      Values are filled in from whatever the browser is showing when the key is pressed,
+      and are URL-encoded automatically.
+    </div>
+
+    <script>
+      var PLACEHOLDERS = ['title', 'rawTitle', 'url', 'hostname'];
+
+      var websocket = null;
+      var pluginUUID = null;
+      var settings = {};
+
+      var input = document.getElementById('urlTemplate');
+      // NOT named `status`: at global scope that aliases window.status, a legacy
+      // string property, and every assignment to .textContent is silently dropped.
+      var statusEl = document.getElementById('status');
+
+      function setStatus(text, kind) {
+        statusEl.textContent = text;
+        statusEl.className = 'status' + (kind ? ' ' + kind : '');
+        input.className = kind === 'error' ? 'invalid' : '';
+      }
+
+      /**
+       * Mirrors the service's rules closely enough to catch a typo while typing.
+       * The service re-validates the resolved URL regardless — this is a hint,
+       * never the security boundary.
+       */
+      function describeProblem(template) {
+        if (!template.trim()) return 'Enter a URL template.';
+
+        var unknown = null;
+        var probe = template.replace(/\{([^{}]*)\}/g, function (_m, name) {
+          if (PLACEHOLDERS.indexOf(name.trim()) === -1) {
+            if (!unknown) unknown = name.trim();
+            return '';
+          }
+          return 'x';
+        });
+        if (unknown !== null) {
+          return 'Unknown placeholder {' + unknown + '}. Use ' + PLACEHOLDERS.join(', ') + '.';
+        }
+        if (/[{}]/.test(probe)) return 'Unbalanced { or } in the template.';
+
+        var parsed;
+        try {
+          parsed = new URL(probe);
+        } catch (e) {
+          return 'Not a valid URL.';
+        }
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+          return 'Only http:// and https:// are allowed.';
+        }
+        if (parsed.username || parsed.password) {
+          return 'Remove the username/password from the URL.';
+        }
+        return null;
+      }
+
+      function validate() {
+        var problem = describeProblem(input.value);
+        if (problem) {
+          setStatus(problem, 'error');
+          return false;
+        }
+        // Deliberately does NOT claim "Saved." — validation runs up to a debounce
+        // ahead of the write, and may run when the socket is not open at all.
+        setStatus('');
+        return true;
+      }
+
+      var savePending = false;
+      /**
+       * Once the owner types here, this panel owns the value.
+       *
+       * The host answers our getSettings with whatever it held when the request
+       * arrived, which can be the pre-edit value. Without this, that reply lands
+       * after the save and silently reverts the field — and the next keystroke
+       * then writes the stale text back to the host.
+       */
+      var userEdited = false;
+
+      function save() {
+        if (!validate()) return;
+        settings.urlTemplate = input.value;
+        if (websocket && websocket.readyState === 1) {
+          // Settings go out at payload ROOT; they come back under payload.settings.
+          websocket.send(
+            JSON.stringify({ event: 'setSettings', context: pluginUUID, payload: settings })
+          );
+          savePending = false;
+          setStatus('Saved.', 'ok');
+        } else if (websocket && websocket.readyState === 0) {
+          // Still CONNECTING. Remember, and flush on open, or a template typed
+          // immediately after the panel appears is lost.
+          savePending = true;
+          setStatus('Saving…');
+        } else {
+          // CLOSING/CLOSED: onopen will never fire again, so never claim saved.
+          savePending = true;
+          setStatus('Not saved — reopen this key to try again.', 'error');
+        }
+      }
+
+      var saveTimer = null;
+      input.addEventListener('input', function () {
+        userEdited = true;
+        validate();
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(save, 250);
+      });
+      input.addEventListener('change', function () {
+        userEdited = true;
+        validate();
+        clearTimeout(saveTimer);
+        save();
+      });
+
+      function applySettings(next) {
+        settings = next || {};
+        input.value = typeof settings.urlTemplate === 'string' ? settings.urlTemplate : '';
+        if (input.value) validate();
+        else setStatus('');
+      }
+
+      // The host calls this global. It also tries connectMiraBoxSDSocket and
+      // connectSocket; every shipping plugin here defines the Elgato name and
+      // aliases connectSocket onto it.
+      function connectElgatoStreamDeckSocket(
+        inPort,
+        inUUID,
+        inMessageType,
+        inApplicationInfo,
+        inActionInfo
+      ) {
+        pluginUUID = inUUID;
+
+        // Seed synchronously from the action info the host hands us, so the
+        // field is populated before the socket is even open.
+        try {
+          var actionInfo = JSON.parse(inActionInfo);
+          applySettings(actionInfo && actionInfo.payload ? actionInfo.payload.settings : {});
+        } catch (e) {
+          applySettings({});
+        }
+
+        websocket = new WebSocket('ws://127.0.0.1:' + inPort);
+
+        websocket.onopen = function () {
+          // Echo the register event back rather than hardcoding it.
+          websocket.send(JSON.stringify({ event: inMessageType, uuid: inUUID }));
+          // Flush BEFORE asking. Asking first means the host answers with the
+          // value it held before the flush, and the reply then overwrites the
+          // text the owner typed while the socket was still connecting.
+          if (savePending) save();
+          // The host pushes didReceiveSettings unprompted, but asking costs
+          // nothing and covers the case where it does not.
+          websocket.send(JSON.stringify({ event: 'getSettings', context: inUUID }));
+        };
+
+        websocket.onclose = function () {
+          // A PI's lifetime is its socket's, so there is nothing to reconnect
+          // to — but silence here previously meant an unsaved edit looked saved.
+          if (savePending) {
+            setStatus('Not saved — reopen this key to try again.', 'error');
+          }
+        };
+
+        websocket.onmessage = function (evt) {
+          var data;
+          try {
+            data = JSON.parse(evt.data);
+          } catch (e) {
+            return;
+          }
+          if (data.event === 'didReceiveSettings') {
+            // Never clobber what the owner typed in this panel.
+            if (userEdited) return;
+            applySettings(data.payload ? data.payload.settings : {});
+          }
+        };
+      }
+
+      window.connectSocket = connectElgatoStreamDeckSocket;
+    </script>
+  </body>
+</html>
