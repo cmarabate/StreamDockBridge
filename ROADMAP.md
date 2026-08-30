@@ -304,7 +304,7 @@ carries a seventh control, **TRANSCRIBE** at slot `1,2`, generated through
 AUDIO FIX controls are unchanged. It reuses the plugin's own icon, since no dedicated
 key art exists for it yet.
 
-### Context URL template primitive — `DONE` / `VERIFIED AUTOMATED` + `VERIFIED RUNTIME` / `WAITING PHYSICAL TESTING`
+### Context URL template primitive — `DONE` / **`VERIFIED PHYSICAL`**
 
 The four built-in lookups revealed the general primitive. Rather than adding a hard-coded
 action per site, one configurable action carries a URL template and fills it from the
@@ -354,7 +354,17 @@ Runtime-proven: two templates resolved independently against the same live conte
 action in its own catalog (`StreamDockConfig.ini`), and the Property Inspector was driven
 through the host's real bootstrap contract.
 
-Outstanding: the owner dragging the action onto keys and pressing them.
+**Physically accepted by the owner on 2026-08-30**, at
+`4134266e3b0ffbd195090450e7416c23e250bccd`. The owner configured two Context URL
+instances on the N4 Pro and confirmed:
+
+- each key persisted its own URL template;
+- configuring one did not affect the other;
+- both resolved against the current canonical media title;
+- both opened their intended destination;
+- templates can be changed from VSD Craft with no rebuild of StreamDockBridge.
+
+That last point is the product criterion this slice existed to satisfy.
 
 ### Phase 2B — AgentOS Safe Hardware-Action Contract — `PLANNED` (design agreed, not implemented)
 
