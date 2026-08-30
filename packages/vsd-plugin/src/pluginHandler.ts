@@ -47,9 +47,11 @@ export interface ContextUrlResponse {
 /** Sends only the template; every value substituted into it comes from the service. */
 export type ContextUrlRequester = (template: string) => Promise<ContextUrlResponse>;
 
-/** The per-key configuration the host hands us at keyDown. */
+/** The per-key configuration the host hands us at keyDown and willAppear. */
 export interface ActionSettings {
   urlTemplate?: unknown;
+  /** Absent means ON: the feature is opt-out, so old keys inherit it. */
+  autoWebsiteIcon?: unknown;
 }
 
 export interface KeyDownResult {
@@ -231,6 +233,51 @@ export const defaultContextUrlRequester: ContextUrlRequester = async (template: 
     };
   } catch (e) {
     return { statusCode: res.statusCode, success: false };
+  }
+};
+
+export interface SiteIconResponse {
+  /** loaded | cached | unavailable | dynamic_host | local_host | invalid_template | unsupported_scheme */
+  status: string;
+  hostname?: string;
+  origin?: string;
+  dataUri?: string;
+}
+
+/** Asks the service for the icon of the site a template points at. */
+export type SiteIconRequester = (template: string, refresh?: boolean) => Promise<SiteIconResponse | null>;
+
+/**
+ * The plugin sends only the template; the service decides the origin, applies
+ * the fetch policy, and owns the cache. Nothing about the current page is sent.
+ */
+export const defaultSiteIconRequester: SiteIconRequester = async (template, refresh = false) => {
+  const attempt = async (secret: string) =>
+    postJson('/icon/site', { 'X-Bridge-Secret': secret }, JSON.stringify({ template, refresh }));
+
+  let secret = await getSecret();
+  if (!secret) return null;
+
+  let res = await attempt(secret);
+  if (res.statusCode === 401) {
+    secret = await getSecret(true);
+    if (!secret) return null;
+    res = await attempt(secret);
+  }
+
+  if (res.statusCode !== 200) return null;
+
+  try {
+    const parsed = JSON.parse(res.body);
+    if (!parsed || typeof parsed.status !== 'string') return null;
+    return {
+      status: parsed.status,
+      hostname: typeof parsed.hostname === 'string' ? parsed.hostname : undefined,
+      origin: typeof parsed.origin === 'string' ? parsed.origin : undefined,
+      dataUri: typeof parsed.dataUri === 'string' ? parsed.dataUri : undefined,
+    };
+  } catch (e) {
+    return null;
   }
 };
 

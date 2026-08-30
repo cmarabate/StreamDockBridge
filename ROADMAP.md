@@ -323,8 +323,9 @@ N4 key (its own urlTemplate)
 **Action:** `Context URL`, UUID `com.cmarabate.streamdock.streamdockbridge.contexturl`,
 Property Inspector at `propertyInspector/contextUrl.html`.
 
-**Settings schema:** exactly one key, `urlTemplate: string`. Title and icon are the host's
-own generic controls and are deliberately not duplicated.
+**Settings schema:** `urlTemplate: string`, plus `autoWebsiteIcon: boolean` added by the
+Auto Website Icon slice below. Title remains the host's own generic control and is
+deliberately not duplicated.
 
 **Placeholders:** `{title}` (the existing canonicalTitle authority — no second title
 cleaner exists), `{rawTitle}`, `{url}`, `{hostname}`. Not an expression language: no
@@ -365,6 +366,167 @@ instances on the N4 Pro and confirmed:
 - templates can be changed from VSD Craft with no rebuild of StreamDockBridge.
 
 That last point is the product criterion this slice existed to satisfy.
+
+### Auto Website Icons for Context URL — `DONE` / `VERIFIED AUTOMATED` + `VERIFIED RUNTIME` / `WAITING PHYSICAL TESTING`
+
+Context URL configures itself visually: paste a template, and the site's own icon appears
+on the key. One reusable action, no per-site artwork.
+
+```
+key settings { urlTemplate, autoWebsiteIcon }
+  → plugin derives nothing; sends ONLY the template
+    → authenticated POST /icon/site
+      → origin derived from the template alone
+        → public-destination policy, pinned DNS, per-hop revalidation
+          → bounded HTML discovery, then /favicon.ico
+            → bytes sniffed, bounded, returned as a data URI
+              → plugin setImage (volatile overlay, re-applied on willAppear)
+```
+
+**Setting.** `autoWebsiteIcon: boolean`, default ON. Absent means ON, so keys configured
+before this slice inherit it. Per-key, stored alongside `urlTemplate`.
+
+**Origin derivation** (`siteIcon.ts`) is pure and network-free. Placeholders are
+substituted with two different probe tokens and the resulting authorities compared: equal
+means a stable host, different means the authority depends on the current page and the
+icon is refused as `dynamic_host`. The icon is a property of the configured SITE, never of
+the media, which is what makes a title change cost nothing.
+
+**Two capabilities, two policies.** Context URL may still OPEN `http://localhost:3000` in
+the browser. The service will not FETCH from it. `ipPolicy.ts` gates server-side retrieval
+to publicly routable HTTP(S) on ports 80/443 only, covering loopback, RFC1918, CGNAT,
+link-local and cloud metadata, multicast and reserved space, IPv6 loopback/ULA/link-local,
+IPv4-mapped IPv6 **including the hex rendering the resolver actually returns**, NAT64 and
+6to4 embeddings, Teredo, and the documentation ranges. IPv6 is an allowlist (global
+unicast only), so a range overlooked becomes a false reject and never a bypass.
+
+**Pinned DNS.** Node calls a custom `lookup` once per connection and connects to exactly
+what it returns, which closes the check-then-connect rebinding window. It returns exactly
+one approved address, because with `autoSelectFamily` every returned address becomes a
+connection candidate. The hostname stays in `host`, so SNI and certificate validation are
+unaffected. No connection pooling: a keep-alive socket must not outlive its policy check.
+
+**Every redirect hop is judged alone** — the configured origin earns its redirect target
+nothing. Redirects into private space, to non-web ports, to other schemes, or carrying
+credentials are refused before a socket is opened.
+
+**Discovery** reads a bounded page prefix (192 KB) and ranks `rel=icon`,
+`rel="shortcut icon"` and `apple-touch-icon` by declared size — smallest that still covers
+the ~126 px key, then largest below it — falling back to `/favicon.ico`. Oversized HTML is
+truncated rather than treated as an error, because a real homepage routinely exceeds any
+sane cap and the `<head>` sits at the start; Rotten Tomatoes does not resolve otherwise.
+No JavaScript is parsed or executed. This is not a brand-logo crawler.
+
+**Accepted bytes:** PNG, JPEG, ICO and WEBP, chosen by magic bytes rather than
+`Content-Type`, which is frequently wrong on `/favicon.ico`. ICO passes through undecoded
+because the host's own decoder table accepts `image/x-icon`. SVG is refused despite the
+host accepting it: it is XML handed to a renderer, carrying entity-expansion and embedded
+-script surface. A PNG's IHDR dimensions are read without decoding, so a 10 KB file
+declaring 30000×30000 cannot reach the host's decoder.
+
+**Cache** (`iconCache.ts`) is keyed by origin, so every key on a site shares one download
+and query or path edits never re-fetch. Bounds: 64 entries, 256 KB per image, 2 MB total,
+LRU eviction, 14-day success lifetime and a 1-hour failure lifetime so a site with no
+usable icon is not re-fetched on every appearance. Persisted to
+`%APPDATA%\StreamDockBridge\iconCache.json` and revalidated on load — a malformed entry is
+dropped rather than trusted, since this file feeds data URIs to the host's decoder.
+Failures are deliberately not persisted, so a restart gives a failing site another chance.
+One in-flight resolution per origin, so six keys appearing together cause one download.
+Refresh invalidates exactly one origin and never flushes the cache.
+
+**Generation ownership.** Each key carries a generation counter bumped by every event that
+changes what it should show. A response whose generation is stale is discarded, so an old
+template's icon can never land on a retargeted key, and a response arriving after the
+owner switched the feature off never regains authority. State is dropped on
+`willDisappear` and on socket loss, so nothing accumulates.
+
+**Ownership semantics.** The plugin asserts an image only when it owns one. With the
+setting ON it owns the overlay and re-applies it on every `willAppear`, because `setImage`
+is volatile and the host rebuilds the key from the profile. With it OFF it stops resolving,
+invalidates in-flight work, and applies the plugin's own default image once.
+
+**Known limitation, honestly stated.** Host archaeology found no per-key operation that
+restores the exact icon a user selected in VSD Craft. `VSD Craft.exe` contains no
+`clearImage`, `resetImage`, `setDefaultImage` or `restoreImage`; `clearIcon` exists but is
+a flag on the device-wide `setBackground`/`stopBackground` wallpaper events, not a per-key
+command, and no shipped plugin restores a host-owned image after calling `setImage`. So
+switching the setting off returns the key to **this plugin's** default image, not to a
+manually chosen one; a manually selected icon reappears once the host reconstructs the key
+(profile or page switch, or a VSD Craft restart), since the overlay does not persist.
+StreamDockBridge is deliberately not coupled to private VSD profile-store internals to
+work around this.
+
+**Property Inspector** gains the checkbox, the derived website, an icon status
+(Loaded / Cached / Unavailable / Disabled / Dynamic host / Local host), a preview, and
+Refresh Icon. The panel is a `file://` page with an opaque origin and no bridge secret, so
+it cannot call the service; it asks the plugin over `sendToPlugin` and is answered on
+`sendToPropertyInspector`. Both events are routed by the host's own `SDPluginServer` and
+are used by shipped plugins.
+
+**Runtime-proven on the live host** at VSD Craft 3.10.202.0702 with the N4 Pro connected,
+one plugin process, against the real internet:
+
+- YouTube, Rotten Tomatoes and ReelGood icons rendered on their actual keys, coexisting;
+- ReelGood served `image/x-icon` at 33,310 bytes and rendered — ICO pass-through, no decoder;
+- editing only the query left the icon and the cache untouched;
+- retargeting the host to Wikipedia repainted the key and reported `Loaded`;
+- three media-title changes moved nothing — the cache file was not even rewritten;
+- switching the feature off returned the key to the plugin default and reported `Disabled`;
+- switching it back on restored the icon from cache, reporting `Cached`, with no fetch;
+- Refresh Icon revalidated exactly one origin, leaving the other three timestamps intact;
+- a profile switch away and back re-applied all icons with zero fetches;
+- a full VSD Craft restart restored all icons from the persistent cache with zero fetches.
+
+Live refusals confirmed against the running service: `localhost`, `127.0.0.1`, private
+IPv4, `[::1]`, `169.254.169.254`, credential-bearing origins, non-web ports and dynamic
+authorities were all refused without a socket being opened, and an unauthenticated call
+returns 401.
+
+**Adversarial review.** A read-only reviewer attacked SSRF, DNS rebinding,
+redirect-to-private, address-selection, credential-bearing URLs, cache growth, stale icon
+races, generation collisions, the toggle-off race, reconnect behaviour, unbounded
+responses, malformed image types, and regression of both Context URL and the shell-free
+launcher. **No HIGH findings**; it could not construct a working SSRF, a rebinding window,
+a redirect-to-private, an XSS, or a crash path. Four MEDIUM and nine lesser findings were
+raised and all were reconciled:
+
+- the decompression-bomb guard covered PNG only, so a 2 KB JPEG declaring 65535×65535
+  reached both the host's decoder and the panel's browser. Declared dimensions are now
+  read for JPEG, ICO (including a PNG-compressed entry) and WebP as well;
+- `/<link\b[^>]*>/g` was quadratic on hostile HTML — 192 KB of unterminated `<link` measured
+  ~4s of blocked event loop, and this service is single-threaded, so it stalled keyDown
+  launches too. Replaced with a linear bounded scanner;
+- `isBlockedHostname` stripped one trailing dot, so `localhost..` and `169.254.169.254..`
+  passed the first gate and were sent to the resolver (on Windows a `.local` name puts an
+  mDNS query on the wire). The address gate still refused them, but the two-layer property
+  had collapsed to one. All trailing dots are now stripped;
+- the per-hop timeout was socket-inactivity only, so a server dripping a byte every four
+  seconds held a hop — and its `inflight` slot — effectively forever, permanently pinning
+  that origin to a promise that never settled. A wall-clock cap now bounds every hop, and
+  the whole resolution shares one 20s budget that stays under the plugin's 25s timeout;
+- plus: a cache entry could declare `bytes: 1` beside an unbounded data URI; Refresh
+  silently no-opped when it coalesced onto an in-flight resolve; the plugin memo was
+  bounded by count but not bytes; an ineligible declared href aborted the remaining
+  candidates including the `/favicon.ico` fallback; a failed request for a superseded
+  template skipped the generation check; two non-routable IPv6 ranges were accepted.
+
+The reviewer explicitly confirmed the signed-shift arithmetic in `parseIpv4` is correct,
+that no IPv4 class is missing from the block list, and that the Property Inspector has no
+XSS sink.
+
+Beyond the reviewer's findings, the dimension guard was tightened further: unreadable
+dimensions are now a refusal rather than a pass, since a file crafted to defeat the header
+read while a more lenient decoder resyncs would otherwise be admitted. Ten real sites,
+including four ICOs, still resolve under the stricter rule.
+
+**A second review pass over these fixes was dispatched but did not return**, so the
+reconciliation itself has NOT been independently re-reviewed. It is covered by 452
+automated tests and by cold-cache verification against ten live sites, and the fixes are
+individually described above — but that re-review remains outstanding work, not a
+completed gate.
+
+**Physical acceptance is still outstanding** — the owner has not yet confirmed the icons on
+the N4 Pro hardware itself. Everything above is host-rendered and agent-observed.
 
 ### Phase 2B — AgentOS Safe Hardware-Action Contract — `PLANNED` (design agreed, not implemented)
 

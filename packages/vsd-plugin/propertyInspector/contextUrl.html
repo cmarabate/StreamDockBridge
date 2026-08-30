@@ -56,6 +56,71 @@
       .status.ok {
         color: var(--good);
       }
+      .section {
+        margin-top: 14px;
+        padding-top: 12px;
+        border-top: 1px solid var(--border);
+      }
+      .check {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 600;
+      }
+      .check input {
+        margin: 0;
+        accent-color: var(--accent);
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 10px;
+      }
+      .preview {
+        width: 40px;
+        height: 40px;
+        flex: 0 0 40px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--field);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+      }
+      .preview img {
+        max-width: 32px;
+        max-height: 32px;
+        display: none;
+      }
+      .facts {
+        min-width: 0;
+        flex: 1 1 auto;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .facts .site {
+        color: var(--fg);
+        word-break: break-all;
+      }
+      button {
+        margin-top: 10px;
+        padding: 6px 12px;
+        background: var(--field);
+        color: var(--fg);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        font: inherit;
+        cursor: pointer;
+      }
+      button:hover:not(:disabled) {
+        border-color: var(--accent);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
       .hint {
         margin-top: 14px;
         padding-top: 10px;
@@ -94,6 +159,23 @@
     />
     <div id="status" class="status"></div>
 
+    <div class="section">
+      <label class="check" for="autoIcon">
+        <input id="autoIcon" type="checkbox" checked />
+        Automatically use website icon
+      </label>
+
+      <div class="row">
+        <div class="preview"><img id="preview" alt="" /></div>
+        <div class="facts">
+          <div>Website: <span class="site" id="site">—</span></div>
+          <div>Icon: <span id="iconStatus">—</span></div>
+        </div>
+      </div>
+
+      <button id="refresh" type="button">Refresh Icon</button>
+    </div>
+
     <div class="hint">
       <b>Available placeholders</b>
       <ul>
@@ -111,12 +193,18 @@
 
       var websocket = null;
       var pluginUUID = null;
+      var actionUUID = null;
       var settings = {};
 
       var input = document.getElementById('urlTemplate');
       // NOT named `status`: at global scope that aliases window.status, a legacy
       // string property, and every assignment to .textContent is silently dropped.
       var statusEl = document.getElementById('status');
+      var autoIconEl = document.getElementById('autoIcon');
+      var siteEl = document.getElementById('site');
+      var iconStatusEl = document.getElementById('iconStatus');
+      var previewEl = document.getElementById('preview');
+      var refreshEl = document.getElementById('refresh');
 
       function setStatus(text, kind) {
         statusEl.textContent = text;
@@ -172,6 +260,104 @@
         return true;
       }
 
+      /**
+       * The same two-probe derivation the service uses, so the panel can name
+       * the website without asking anything. Substituting two different tokens
+       * and comparing the authority is what detects a host that depends on the
+       * current page.
+       */
+      function deriveSite(template) {
+        function substitute(token) {
+          return String(template).replace(/\{([^{}]*)\}/g, function (_m, name) {
+            return PLACEHOLDERS.indexOf(name.trim()) === -1 ? '' : token;
+          });
+        }
+        if (!template || !template.trim()) return { reason: 'empty' };
+        var a, b;
+        try {
+          a = new URL(substitute('aaaaaaaa'));
+          b = new URL(substitute('bbbbbbbb'));
+        } catch (e) {
+          return { reason: 'invalid' };
+        }
+        if (a.protocol !== 'http:' && a.protocol !== 'https:') return { reason: 'invalid' };
+        if (a.host !== b.host || a.protocol !== b.protocol) return { reason: 'dynamic' };
+        if (!a.hostname || a.username || a.password) return { reason: 'invalid' };
+        return { hostname: a.hostname.toLowerCase(), origin: a.origin };
+      }
+
+      var STATUS_TEXT = {
+        loaded: 'Loaded',
+        cached: 'Cached',
+        unavailable: 'Unavailable',
+        disabled: 'Disabled',
+        dynamic_host: 'Dynamic host',
+        local_host: 'Local host',
+        invalid_template: 'Unavailable',
+        unsupported_scheme: 'Unavailable',
+        empty: '—',
+        error: 'Unavailable',
+      };
+
+      function showPreview(dataUri) {
+        if (dataUri) {
+          previewEl.src = dataUri;
+          previewEl.style.display = 'block';
+        } else {
+          previewEl.removeAttribute('src');
+          previewEl.style.display = 'none';
+        }
+      }
+
+      /** Everything the panel can say on its own, with no round trip. */
+      function renderLocalState() {
+        var site = deriveSite(input.value);
+        siteEl.textContent = site.hostname || '—';
+
+        if (!autoIconEl.checked) {
+          iconStatusEl.textContent = STATUS_TEXT.disabled;
+          showPreview(null);
+          refreshEl.disabled = true;
+          return false;
+        }
+        refreshEl.disabled = false;
+
+        if (site.reason === 'dynamic') {
+          iconStatusEl.textContent = STATUS_TEXT.dynamic_host;
+          showPreview(null);
+          return false;
+        }
+        if (site.reason) {
+          iconStatusEl.textContent = '—';
+          showPreview(null);
+          return false;
+        }
+        return true;
+      }
+
+      /**
+       * The panel is a file:// page with an opaque origin and no bridge secret,
+       * so it cannot ask the service anything directly. The plugin holds both
+       * and answers on sendToPropertyInspector.
+       */
+      function askPlugin(command) {
+        if (!websocket || websocket.readyState !== 1) return;
+        websocket.send(
+          JSON.stringify({
+            event: 'sendToPlugin',
+            action: actionUUID,
+            context: pluginUUID,
+            payload: { command: command, settings: settings },
+          })
+        );
+      }
+
+      function refreshIconState(command) {
+        if (!renderLocalState()) return;
+        iconStatusEl.textContent = 'Resolving…';
+        askPlugin(command || 'iconStatus');
+      }
+
       var savePending = false;
       /**
        * Once the owner types here, this panel owns the value.
@@ -183,9 +369,10 @@
        */
       var userEdited = false;
 
-      function save() {
+      function save(afterSave) {
         if (!validate()) return;
         settings.urlTemplate = input.value;
+        settings.autoWebsiteIcon = autoIconEl.checked;
         if (websocket && websocket.readyState === 1) {
           // Settings go out at payload ROOT; they come back under payload.settings.
           websocket.send(
@@ -193,6 +380,7 @@
           );
           savePending = false;
           setStatus('Saved.', 'ok');
+          if (afterSave) afterSave();
         } else if (websocket && websocket.readyState === 0) {
           // Still CONNECTING. Remember, and flush on open, or a template typed
           // immediately after the panel appears is lost.
@@ -206,24 +394,62 @@
       }
 
       var saveTimer = null;
+      var lastSite = null;
+
+      /**
+       * Only a change of WEBSITE is icon work. Editing the query, or the media
+       * title changing, must not disturb the icon at all.
+       */
+      function siteChanged() {
+        var site = deriveSite(input.value);
+        var key = site.origin || site.reason || '';
+        if (key === lastSite) return false;
+        lastSite = key;
+        return true;
+      }
+
       input.addEventListener('input', function () {
         userEdited = true;
         validate();
+        renderLocalState();
         clearTimeout(saveTimer);
-        saveTimer = setTimeout(save, 250);
+        saveTimer = setTimeout(function () {
+          var changed = siteChanged();
+          save(changed ? refreshIconState : null);
+        }, 250);
       });
       input.addEventListener('change', function () {
         userEdited = true;
         validate();
         clearTimeout(saveTimer);
-        save();
+        var changed = siteChanged();
+        save(changed ? refreshIconState : null);
+      });
+
+      autoIconEl.addEventListener('change', function () {
+        userEdited = true;
+        renderLocalState();
+        // Save first: the plugin reads the settings we send it, and toggling
+        // off must invalidate any resolution already in flight.
+        save(refreshIconState);
+      });
+
+      refreshEl.addEventListener('click', function () {
+        save(function () {
+          refreshIconState('refreshIcon');
+        });
       });
 
       function applySettings(next) {
         settings = next || {};
         input.value = typeof settings.urlTemplate === 'string' ? settings.urlTemplate : '';
+        // Absent means ON: the setting is opt-out, so existing keys inherit it.
+        autoIconEl.checked = settings.autoWebsiteIcon !== false;
         if (input.value) validate();
         else setStatus('');
+        lastSite = null;
+        siteChanged();
+        refreshIconState();
       }
 
       // The host calls this global. It also tries connectMiraBoxSDSocket and
@@ -240,12 +466,18 @@
 
         // Seed synchronously from the action info the host hands us, so the
         // field is populated before the socket is even open.
+        var seeded = {};
         try {
           var actionInfo = JSON.parse(inActionInfo);
-          applySettings(actionInfo && actionInfo.payload ? actionInfo.payload.settings : {});
+          actionUUID = actionInfo ? actionInfo.action : null;
+          seeded = actionInfo && actionInfo.payload ? actionInfo.payload.settings : {};
         } catch (e) {
-          applySettings({});
+          seeded = {};
         }
+
+        // Populate the panel before the socket exists; askPlugin no-ops until
+        // it is open, and onopen asks again.
+        applySettings(seeded);
 
         websocket = new WebSocket('ws://127.0.0.1:' + inPort);
 
@@ -259,6 +491,8 @@
           // The host pushes didReceiveSettings unprompted, but asking costs
           // nothing and covers the case where it does not.
           websocket.send(JSON.stringify({ event: 'getSettings', context: inUUID }));
+          // The plugin is reachable only now, so the icon question is asked here.
+          refreshIconState();
         };
 
         websocket.onclose = function () {
@@ -280,6 +514,20 @@
             // Never clobber what the owner typed in this panel.
             if (userEdited) return;
             applySettings(data.payload ? data.payload.settings : {});
+            return;
+          }
+          if (data.event === 'sendToPropertyInspector') {
+            var payload = data.payload || {};
+            if (payload.command !== 'iconStatus') return;
+            // A reply about a template we have since edited is not about the
+            // state on screen; the plugin discards those too.
+            if (!renderLocalState()) return;
+            // hasOwnProperty, not a bare lookup: a status of 'constructor' or
+            // '__proto__' would otherwise resolve to something off Object.prototype.
+            var known = Object.prototype.hasOwnProperty.call(STATUS_TEXT, payload.status);
+            iconStatusEl.textContent = known ? STATUS_TEXT[payload.status] : 'Unavailable';
+            showPreview(payload.dataUri);
+            if (payload.hostname) siteEl.textContent = payload.hostname;
           }
         };
       }

@@ -10,6 +10,7 @@ import {
   DownstreamRequester,
 } from './transcriptForge';
 import { resolveUrlTemplate, placeholderValuesFrom } from './urlTemplate';
+import { IconService } from './iconService';
 
 export interface BridgeServerOptions {
   port?: number;
@@ -18,6 +19,7 @@ export interface BridgeServerOptions {
   secretStore?: SecretStore;
   launcher?: (url: string) => void;
   transcriptForgeRequester?: DownstreamRequester;
+  iconService?: IconService;
 }
 
 export const PINNED_EXTENSION_ORIGIN = 'chrome-extension://ldhiheiinaifckcfjmbmaaigdmknnpgi';
@@ -47,6 +49,7 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
   const transcriptForgeRequester = options.transcriptForgeRequester;
 
   const secretStore = options.secretStore ?? new SecretStore();
+  const iconService = options.iconService ?? new IconService();
 
   let launcher: (url: string) => void =
     options.launcher ??
@@ -274,6 +277,96 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
 
         launcher(result.url);
         sendJson(200, { success: true, action: 'custom', resolvedUrl: result.url });
+      });
+      return;
+    }
+
+    /**
+     * The icon for a Context URL key's configured site.
+     *
+     * Takes only the template, and answers from the template's ORIGIN alone —
+     * so a title change, or an edit to the query, is answered from cache with
+     * no network at all. Secret-gated for the same reason /lookup/custom is:
+     * the template is caller-supplied.
+     *
+     * This route DOES fetch, which /lookup/custom deliberately does not, so it
+     * runs under the stricter policy in ipPolicy: public HTTP(S) destinations
+     * only, revalidated at every redirect hop.
+     */
+    if (req.method === 'POST' && pathname === '/icon/site') {
+      if (!isAllowedOrigin(origin, allowAnyExtension)) {
+        sendJson(403, { success: false, error: 'origin_forbidden' });
+        return;
+      }
+
+      const clientSecret = req.headers['x-bridge-secret'];
+      if (!secretStore.verifySecret(clientSecret as string | undefined)) {
+        sendJson(401, { success: false, error: 'unauthorized' });
+        return;
+      }
+
+      /**
+       * A template has a 2000-character ceiling, so anything approaching this
+       * is not a real request. Bounded because the body is buffered in memory
+       * and this service is long-running.
+       */
+      const MAX_BODY_BYTES = 16 * 1024;
+      let body = '';
+      let aborted = false;
+      req.on('data', (chunk) => {
+        if (aborted) return;
+        body += chunk;
+        if (body.length > MAX_BODY_BYTES) {
+          aborted = true;
+          // Answer, then stop accumulating. Destroying the socket here would
+          // race the response and the caller would see a connection error
+          // rather than the refusal; the rest of the body is simply dropped,
+          // so memory stays bounded either way.
+          body = '';
+          sendJson(413, { success: false, error: 'body_too_large' });
+        }
+      });
+
+      req.on('end', () => {
+        if (aborted) return;
+        let template: unknown;
+        let refresh = false;
+        try {
+          const payload = JSON.parse(body);
+          template = payload?.template;
+          refresh = payload?.refresh === true;
+        } catch (e) {
+          sendJson(400, { success: false, error: 'invalid_json' });
+          return;
+        }
+
+        if (typeof template !== 'string') {
+          sendJson(400, { success: false, error: 'empty_template' });
+          return;
+        }
+
+        iconService
+          .resolve(template, { refresh })
+          .then((outcome) => {
+            sendJson(200, {
+              // `success` reports that the question was answered, not that an
+              // icon exists: a site with no usable icon is a normal outcome,
+              // and the caller distinguishes it by `status`.
+              success: true,
+              status: outcome.status,
+              hostname: outcome.hostname,
+              origin: outcome.origin,
+              dataUri: outcome.icon?.dataUri,
+              mime: outcome.icon?.mime,
+              bytes: outcome.icon?.bytes,
+              sourceUrl: outcome.icon?.sourceUrl,
+            });
+          })
+          .catch(() => {
+            if (!res.headersSent) {
+              sendJson(200, { success: true, status: 'unavailable' });
+            }
+          });
       });
       return;
     }
