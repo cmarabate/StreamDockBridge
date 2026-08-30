@@ -133,11 +133,15 @@ function validateProfileDirectory(profileDir: string) {
  *
  * These assertions exist because the previous validator was self-referential:
  * it checked the generator's output against expectations derived from that
- * same generator, so a package that no host would accept still passed. The
- * page manifest was missing DeviceModel/DeviceUUID/Version, VSD Craft could
- * not construct the page, and the import was silently discarded with no error
- * dialog — only a `Can not find profile "<page>.sdProfile" ... pathExists:
- * true` line in its log.
+ * same generator, so a package that no host would accept still passed.
+ *
+ * They are deliberately STRICTER than the host corpus, not a description of it.
+ * Applying them to the 153 shipped packages, only a minority pass: host
+ * packages contain touchbar actions (a non-coordinate slot), multi-action
+ * entries carrying an extra `Actions` key, and `Images/<name>` values that
+ * reference app built-ins. We ship none of those — every image we reference is
+ * a file we package — so the tighter rule is correct for us and would be wrong
+ * as a claim about VSD Craft in general.
  */
 const HOST_PAGE_MANIFEST_KEYS = ['Actions', 'DeviceModel', 'DeviceUUID', 'Name', 'Version'];
 const HOST_ACTION_KEYS = ['ActionID', 'Controller', 'Name', 'Settings', 'State', 'States', 'UUID'];
@@ -158,21 +162,27 @@ function validateHostPageContract(profileDir: string) {
   expect(page.Name).toBe('');
 
   for (const [slot, action] of Object.entries<any>(page.Actions)) {
-    expect(Object.keys(action).sort()).toEqual([...HOST_ACTION_KEYS].sort());
+    // Required subset, not exact equality: host multi-action entries legitimately
+    // carry an extra `Actions` key (18 of 2473, 16 of them VSDN4Pro touchbar
+    // actions), so demanding an exact key set would misdescribe the host.
+    for (const required of HOST_ACTION_KEYS) {
+      expect(Object.keys(action)).toContain(required);
+    }
     // No host action carries this; it is not part of the accepted shape.
     expect(action).not.toHaveProperty('SoftwareSettings');
     expect(typeof action.UUID).toBe('string');
     expect(action.UUID.length).toBeGreaterThan(0);
-    expect(slot).toMatch(/^-?\d+,-?\d+$/);
+    // `touchbar` is a valid non-coordinate slot in the host corpus; we use none.
+    expect(slot === 'touchbar' || /^-?\d+,-?\d+$/.test(slot)).toBe(true);
 
     for (const state of action.States || []) {
       if (!state.Image) continue;
       // A package-local image is a bare basename; the host resolves it under
-      // Images/. Of 3973 host actions, 1757 use a bare basename and every
-      // "Images/<name>" value denotes an app built-in resource that is NOT a
-      // file in the package — all 18 such host values are absent from their own
-      // zips. Writing "Images/foo.png" therefore names a built-in that does not
-      // exist, and the key renders blank.
+      // Images/. Resolving every States[].Image in the 153 shipped packages
+      // against its own zip: 970/970 bare basenames resolve to a packaged file,
+      // and 0/845 separator-bearing values do — every one names an app or plugin
+      // built-in. Writing "Images/foo.png" therefore points at a built-in that
+      // does not exist, and the key renders blank.
       expect(state.Image).not.toContain('/');
     }
   }
@@ -215,7 +225,12 @@ describe('VSD Craft host page contract', () => {
       'C:/Program Files (x86)/VSD Craft/defaultData/defaultProfiles/VSDN4Pro/en',
       'one.streamDockProfile'
     );
-    if (!fs.existsSync(hostPackage)) return;
+    if (!fs.existsSync(hostPackage)) {
+      // Depends on a local VSD Craft install. Passing silently off-machine would
+      // be indistinguishable from a real check, so say so.
+      console.warn('skipped: VSD Craft host package not present on this machine');
+      return;
+    }
 
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sdb-host-sample-'));
     try {
@@ -266,9 +281,18 @@ describe('USEFUL v2.streamDockProfile packaged artifact', () => {
    * ships are spelled `.streamDockProfile`. A `.StreamDockProfile` file matched
    * nothing and the importer returned silently, with no error dialog.
    */
-  it('is named with the exact extension casing the importer accepts', () => {
-    expect(path.basename(artifactPath).endsWith('.streamDockProfile')).toBe(true);
-    expect(path.basename(artifactPath)).not.toContain('.StreamDockProfile');
+  it('ships exactly one import artifact, spelled the way the host spells it', () => {
+    // Asserting the hardcoded artifactPath against itself would be vacuous, so
+    // check the repository root: exactly one profile package must exist, and it
+    // must carry the host's spelling. A stale `.StreamDockProfile` left beside
+    // it is the specific mistake this guards — the owner would have no way to
+    // tell the two apart in a file dialog.
+    const packages = fs
+      .readdirSync(repoRoot)
+      .filter((f) => f.toLowerCase().endsWith('.streamdockprofile'));
+
+    expect(packages).toEqual(['USEFUL v2.streamDockProfile']);
+    expect(fs.existsSync(artifactPath)).toBe(true);
   });
 
   it('is a real zip archive with no backslash-separated entries', () => {

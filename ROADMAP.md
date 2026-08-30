@@ -70,16 +70,15 @@ under `defaultData/defaultProfiles` (341 page manifests, 2473 actions, including
 `VSDN4Pro` set for this exact device). Three deviations from that corpus were found and
 fixed in the generator:
 
-1. **File extension casing — the probable cause of the silence.** The host's packages
-   are all `.streamDockProfile`; ours was `.StreamDockProfile`. `VSD Craft.exe` holds an
+1. **File extension casing — leading candidate, unproven.** The host's packages are all
+   `.streamDockProfile`; ours was `.StreamDockProfile`. `VSD Craft.exe` holds an
    accepted-suffix table for `SDProfileManager::importProfile` containing both
-   `SDProfile` and `sdprofile` as separate entries — a redundancy that only makes sense
-   if the comparison is case-sensitive — and a separate, all-lowercase table on the
-   `streamdock://` URL path. A non-matching suffix returns without raising an error,
-   which is exactly the observed symptom.
+   `SDProfile` and `sdprofile`, hinting at a case-sensitive compare. Counter-evidence:
+   the Qt dialog filter offers `*.mKeyProfile`, which could never match the
+   lowercase-only `mkeyprofile` entry under a case-sensitive compare. The table is
+   equally consistent with a case-insensitive match.
 2. **Page manifest missing `DeviceModel`, `DeviceUUID`, `Version`.** Present in 341/341
-   host page manifests. A page that does not name its device cannot be bound to one, and
-   the host logs `Can not find profile "<page>.sdProfile" ... pathExists: true`.
+   host page manifests. A page that does not name its device cannot be bound to one.
 3. **Image references.** Package-local art is referenced by **bare basename**, resolved
    under `Images/`. An `Images/<name>` value denotes an app *built-in* resource — all 18
    such host values are absent from their own packages. Ours wrote `Images/<name>.png`,
@@ -95,7 +94,19 @@ the generator's output against expectations derived from that same generator, so
 package no host would accept still passed. It is now anchored to the surveyed host
 contract and cross-checks against a real `VSDN4Pro` package from the install.
 
-Causality is **not yet proven** — that requires an actual successful import.
+**No cause is proven.** All three are real conformance defects against a corpus with no
+counterexamples, and all three had to be fixed regardless. But no log line records the
+import at all — there is no occurrence of `USEFUL`, `importProfile`, or the page UUID
+`F06684D5` in any log file. An earlier reading of a `Can not find profile ...
+pathExists: true` line as evidence was **wrong**: it names a since-deleted local store
+profile and the generator's *previous* page UUID, and is emitted during a UI redraw, not
+an import. A dangling `Pages.Current` is also routine — 100/153 host packages ship that
+way.
+
+Untested alternatives that remain open: page-UUID or profile-name collision with the
+local store (the generator's own comments record this producing exactly "no new profile
+appears" once before), and current-device scoping at import time
+(`onImportProfile_CurrentDev`). The next import distinguishes all of them.
 
 #### Known issue — AUDIO FIX device binding
 

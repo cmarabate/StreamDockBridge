@@ -190,13 +190,13 @@ const childManifest = {
       UUID: 'com.cmarabate.streamdock.streamdockbridge.transcribe'
     }
   },
-  // VSD Craft requires these on a PAGE manifest, not just the top-level one.
+  // VSD Craft carries these on a PAGE manifest, not just the top-level one.
   // Surveyed across every profile package shipped with VSD Craft 3.10.202.0702
   // (153 packages, 341 page manifests): the page key set is invariably
   // Actions/DeviceModel/DeviceUUID/Name/Version, and page Name is always "".
-  // Omitting the three device/version keys is why the importer silently
-  // discarded this package — it could not construct the page, and logged
-  // `Can not find profile "<page>.sdProfile" ... pathExists: true`.
+  // A page that does not name its device cannot be bound to one, so emitting
+  // them is required for conformance — but this is NOT established as the cause
+  // of the silent import. No log line records our import at all.
   DeviceModel: '20GBA9901',
   DeviceUUID: 'VSDN4Pro',
   Name: '',
@@ -215,14 +215,21 @@ fs.writeFileSync(path.join(targetChildDir, 'manifest.json'), JSON.stringify(chil
 // writes an explicit forward-slash entry for every directory level. Windows'
 // built-in bsdtar (System32\tar.exe, libarchive) reproduces that exactly, so
 // use it instead of Compress-Archive — no new dependency required.
-// Extension casing is load-bearing. VSD Craft.exe carries an accepted-suffix
-// table for SDProfileManager::importProfile containing BOTH "SDProfile" and
-// "sdprofile" as separate entries — a redundancy that only makes sense if the
-// comparison is case-sensitive — and every one of the 153 profile packages the
-// app ships is spelled `.streamDockProfile` (lowercase s, capital D, capital P).
-// A file named `.StreamDockProfile` matches nothing in that table, and the
-// importer returns without raising an error, which is exactly the silent no-op
-// the owner observed.
+// Use the spelling the host itself uses: `.streamDockProfile` (lowercase s,
+// capital D, capital P), as on all 153 packages the app ships.
+//
+// CANDIDATE CAUSE, not proven. VSD Craft.exe carries an accepted-suffix table
+// for SDProfileManager::importProfile holding "streamDockProfile",
+// "mkeyprofile", "SDProfile", "sdprofile", "monstardeckProfile" — and the
+// SDProfile/sdprofile pair hints at a case-sensitive compare, which would make
+// `.StreamDockProfile` match nothing and return silently. Counter-evidence:
+// the Qt dialog filter offers `*.mKeyProfile`, which would never match the
+// lowercase-only `mkeyprofile` entry under a case-sensitive compare. So the
+// table is consistent with a case-INSENSITIVE match too, and the silent no-op
+// has other untested explanations (page-UUID or profile-name collision with the
+// local store, current-device scoping). Matching the host spelling is correct
+// regardless; do not treat it as the established root cause until an import
+// actually succeeds.
 const targetArtifact = 'USEFUL v2.streamDockProfile';
 const staleVariants = [
   'USEFUL v2.StreamDockProfile', // wrong-cased name that VSD Craft silently ignored
