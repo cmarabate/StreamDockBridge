@@ -899,6 +899,16 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
         return;
       }
 
+      const waitParam = parsed.query?.wait as string | undefined;
+      const waitMs = waitParam ? Math.min(Math.max(parseInt(waitParam, 10) || 0, 0), 30000) : 0;
+
+      if (waitMs > 0) {
+        voiceCoordinator.waitForCommands(browserInstanceId, waitMs).then((commands) => {
+          sendJson(200, { success: true, commands });
+        });
+        return;
+      }
+
       const commands = voiceCoordinator.getPendingCommands(browserInstanceId);
       sendJson(200, { success: true, commands });
       return;

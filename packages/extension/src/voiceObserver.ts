@@ -20,11 +20,16 @@ export class ChatGPTVoiceObserver {
   private isVoiceActive = false;
   private composerForm: HTMLElement | null = null;
   private pollTimer: number | null = null;
+  private unloadHandler: (() => void) | null = null;
 
   constructor(private readonly onStateChange: VoiceObserverCallback) {}
 
-  private unloadHandler: (() => void) | null = null;
-  private visibilityHandler: (() => void) | null = null;
+  public getDiagnosticInfo(): { isVoiceActive: boolean; attached: boolean } {
+    return {
+      isVoiceActive: this.isVoiceActive,
+      attached: !!this.composerForm,
+    };
+  }
 
   public start(): void {
     this.attach();
@@ -32,21 +37,17 @@ export class ChatGPTVoiceObserver {
       this.pollTimer = window.setInterval(() => {
         if (!this.composerForm || !document.contains(this.composerForm)) {
           this.attach();
+        } else {
+          this.evaluateState();
         }
-      }, 2000);
+      }, 500);
 
       this.unloadHandler = () => {
         this.stop();
       };
-      this.visibilityHandler = () => {
-        if (typeof document !== 'undefined' && document.hidden) {
-          this.evaluateState();
-        }
-      };
 
       window.addEventListener('pagehide', this.unloadHandler);
       window.addEventListener('beforeunload', this.unloadHandler);
-      document.addEventListener('visibilitychange', this.visibilityHandler);
     }
   }
 
@@ -64,10 +65,6 @@ export class ChatGPTVoiceObserver {
       window.removeEventListener('beforeunload', this.unloadHandler);
       this.unloadHandler = null;
     }
-    if (typeof document !== 'undefined' && this.visibilityHandler) {
-      document.removeEventListener('visibilitychange', this.visibilityHandler);
-      this.visibilityHandler = null;
-    }
     if (this.isVoiceActive) {
       this.emitState(false);
     }
@@ -77,34 +74,49 @@ export class ChatGPTVoiceObserver {
     if (typeof document === 'undefined') return null;
     const promptInput = document.getElementById('prompt-textarea');
     if (promptInput) {
-      return promptInput.closest('form') || promptInput.parentElement;
+      return (
+        promptInput.closest('main') ||
+        (document.querySelector('main') as HTMLElement) ||
+        promptInput.closest('form') ||
+        promptInput.parentElement
+      );
     }
-    return document.querySelector('form');
+    return (document.querySelector('main') as HTMLElement) || document.querySelector('form') || document.body;
   }
 
   private checkIsActive(root: HTMLElement): boolean {
-    // 1. Check for explicit stop / cancel dictation buttons
-    const hasStopDictateButton = root.querySelector(
-      'button[aria-label*="stop dictat" i], button[aria-label*="stop record" i], button[data-testid="dictate-stop-button"]'
-    );
-    if (hasStopDictateButton) return true;
+    const doc = root.ownerDocument || document;
 
-    // 2. Check microphone button aria-label state
-    const speechBtn = root.querySelector(
-      'button[data-testid="composer-speech-button"], button[data-testid="dictate-button"]'
+    // 1. Explicit stop / cancel dictation buttons anywhere in active view
+    const stopButton = doc.querySelector(
+      'button[aria-label*="stop dictat" i], button[aria-label*="stop record" i], button[aria-label*="stop listen" i], button[data-testid="dictate-stop-button"], button[data-testid="speech-stop-button"]'
     );
-    if (speechBtn) {
-      const ariaLabel = speechBtn.getAttribute('aria-label') || '';
-      if (/stop|cancel|listening|recording|done/i.test(ariaLabel)) {
+    if (stopButton) return true;
+
+    // 2. Microphone button aria-label or attribute state
+    const speechBtns = doc.querySelectorAll(
+      'button[data-testid*="speech"], button[data-testid*="dictat"], button[aria-label*="dictat" i], button[aria-label*="voice" i], button[aria-label*="speech" i], button[aria-label*="microphone" i]'
+    );
+    for (let i = 0; i < speechBtns.length; i++) {
+      const btn = speechBtns[i];
+      const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+      const testId = (btn.getAttribute('data-testid') || '').toLowerCase();
+      const ariaPressed = btn.getAttribute('aria-pressed');
+
+      if (
+        ariaPressed === 'true' ||
+        /stop|cancel|listening|recording|done/i.test(ariaLabel) ||
+        /stop|recording|listening/i.test(testId)
+      ) {
         return true;
       }
     }
 
-    // 3. Check for waveform / listening indicators inside composer
-    const hasWaveform = root.querySelector(
-      '[data-testid*="waveform"], [data-testid*="speech-indicator"], [class*="listening"]'
+    // 3. Waveform, visualizer, or active speech indicators inside composer or thread bottom
+    const waveform = doc.querySelector(
+      '[data-testid*="waveform"], [data-testid*="speech-indicator"], [data-testid*="dictat-anim"], [class*="waveform"], [data-is-recording="true"], [data-recording="true"]'
     );
-    if (hasWaveform) return true;
+    if (waveform) return true;
 
     return false;
   }

@@ -875,18 +875,31 @@ export async function handleMediaOverrideMessage(sender: chrome.runtime.MessageS
   }
 }
 
+let isPollingMediaCommands = false;
+
 export async function pollMediaCommands(): Promise<void> {
   if (typeof chrome === 'undefined' || !chrome.tabs) return;
+  if (isPollingMediaCommands) return;
+  isPollingMediaCommands = true;
 
   try {
     const role = await getRole();
-    if (!channelsFor(role.mode).includes('media')) return;
+    if (!channelsFor(role.mode).includes('media')) {
+      isPollingMediaCommands = false;
+      return;
+    }
 
     const secret = await getSecret();
-    if (!secret) return;
+    if (!secret) {
+      isPollingMediaCommands = false;
+      return;
+    }
+
+    const isTest = typeof process !== 'undefined' && !!process.env.JEST_WORKER_ID;
+    const waitParam = isTest ? '' : '&wait=20000';
 
     const res = await fetch(
-      `${SERVICE_URL}/media/commands?browserInstanceId=${encodeURIComponent(role.browserInstanceId)}`,
+      `${SERVICE_URL}/media/commands?browserInstanceId=${encodeURIComponent(role.browserInstanceId)}${waitParam}`,
       {
         headers: { 'X-Bridge-Secret': secret },
       }
@@ -915,6 +928,13 @@ export async function pollMediaCommands(): Promise<void> {
     }
   } catch (e) {
     void e;
+  } finally {
+    isPollingMediaCommands = false;
+    if (typeof process === 'undefined' || !process.env.JEST_WORKER_ID) {
+      setTimeout(() => {
+        void pollMediaCommands();
+      }, 50);
+    }
   }
 }
 

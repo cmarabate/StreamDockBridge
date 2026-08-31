@@ -198,6 +198,8 @@ export class VoiceCoordinator {
     }
   }
 
+  private waiters = new Map<string, Array<(cmds: PendingMediaCommand[]) => void>>();
+
   public enqueueMediaCommand(
     browserInstanceId: string,
     tabId: number,
@@ -215,7 +217,56 @@ export class VoiceCoordinator {
     const queue = this.pendingCommands.get(browserInstanceId) || [];
     queue.push(cmd);
     this.pendingCommands.set(browserInstanceId, queue);
+
+    // If a long-poll request is waiting for this browser instance, fulfill it immediately
+    const pendingWaiters = this.waiters.get(browserInstanceId);
+    if (pendingWaiters && pendingWaiters.length > 0) {
+      this.waiters.delete(browserInstanceId);
+      const cmds = this.getPendingCommands(browserInstanceId);
+      for (const waiter of pendingWaiters) {
+        try {
+          waiter(cmds);
+        } catch (e) {
+          void e;
+        }
+      }
+    }
+
     return cmd;
+  }
+
+  public async waitForCommands(browserInstanceId: string, timeoutMs = 20000): Promise<PendingMediaCommand[]> {
+    const existing = this.getPendingCommands(browserInstanceId);
+    if (existing.length > 0) {
+      return existing;
+    }
+
+    return new Promise<PendingMediaCommand[]>((resolve) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          const list = this.waiters.get(browserInstanceId) || [];
+          this.waiters.set(
+            browserInstanceId,
+            list.filter((w) => w !== onCommand)
+          );
+          resolve([]);
+        }
+      }, timeoutMs);
+
+      const onCommand = (cmds: PendingMediaCommand[]) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          resolve(cmds);
+        }
+      };
+
+      const list = this.waiters.get(browserInstanceId) || [];
+      list.push(onCommand);
+      this.waiters.set(browserInstanceId, list);
+    });
   }
 
   public getPendingCommands(browserInstanceId: string): PendingMediaCommand[] {

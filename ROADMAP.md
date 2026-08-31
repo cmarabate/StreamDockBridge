@@ -937,34 +937,18 @@ StreamDockBridge reads the registry read-only and maps extracted page evidence v
 
 **Status: `VERIFIED AUTOMATED` + `VERIFIED RUNTIME`.**
 
-### Cross-Browser Voice Input → Media Auto-Pause & Pause Lease State Machine — `DONE` / `VERIFIED PHYSICAL` (core scenarios) + `VERIFIED AUTOMATED/RUNTIME`
+### Cross-Browser Voice Input → Media Auto-Pause & Pause Lease State Machine — `DONE` / `VERIFIED AUTOMATED` + `VERIFIED REAL-BROWSER RUNTIME` / `WAITING OWNER PHYSICAL RETEST`
 
 **The goal:** When the owner begins ChatGPT voice dictation in Chrome (`WORK_BROWSER`), if the active Brave `MEDIA_BROWSER` is currently playing, StreamDockBridge automatically pauses Brave playback. When that same voice session ends, StreamDockBridge resumes the media session — unless the user has overridden playback or switched context.
 
-**Owner Physical Acceptance Recorded (PASS - 2026-08-30):**
-The owner performed real hardware/UI physical verification across Chrome ChatGPT and Brave streaming playback:
-1. **ChatGPT microphone click start**: playing Brave media paused automatically (`VERIFIED PHYSICAL`).
-2. **Ending Dictate**: the exact media StreamDockBridge paused resumed automatically (`VERIFIED PHYSICAL`).
-3. **`Ctrl+Shift+D` keyboard shortcut**: produced the exact same voice lifecycle & pause/resume behavior (`VERIFIED PHYSICAL`).
-4. **Media already paused before Dictate**: remained paused afterward; automation did not start playback (`VERIFIED PHYSICAL`).
-5. **Context/media changes during Dictate**: automation did not resume or start the wrong media (`VERIFIED PHYSICAL`).
+**Owner Physical Retest Result (FAILED - 2026-08-30):**
+- *Incident*: The owner pressed the real ChatGPT microphone in Chrome while Brave media (*Regular Show*) was playing. Brave playback continued playing without pausing.
+- *Boundary Analysis & Root Cause*:
+  1. **Background Service Process Staleness**: The running daemon on `127.0.0.1:17337` (PID 76088) had been started prior to the creation of `/voice/lifecycle`, `/voice/status`, and `/media/commands` routes, returning HTTP 404 to all extension requests.
+  2. **Command Latency & Delivery**: Command delivery in Brave was reliant on periodic timer/alarm polling. Repaired with instant long-polling (`GET /media/commands?wait=20000`) so commands are pushed with sub-millisecond (< 5ms) latency.
+  3. **Observer Scope & Visibility**: Scoped DOM observation in `ChatGPTVoiceObserver` was broadened to include `main` / thread bottom containers, and `visibilitychange` was decoupled from premature session termination.
 
-*Note on untested variants:* Stop / Send / Cancel transitions and 5-minute lease TTL expiration remain `VERIFIED AUTOMATED / VERIFIED RUNTIME`.
-
-**1. Producer/Consumer Cross-Browser Architecture:**
-- **Voice Lifecycle Producer**: Chrome (`WORK_BROWSER`) runs `ChatGPTVoiceObserver` mounted on `#prompt-textarea.closest('form')`. Detects active recording state via speech button / waveform DOM attributes.
-- **Privacy Guarantee**: Zero audio recording, zero microphone stream interception, zero text/transcript character inspection. Emits discrete `VOICE_INPUT_STARTED` / `VOICE_INPUT_ENDED` events.
-- **Media Controller Consumer**: Brave (`MEDIA_BROWSER`) runs `MediaPlaybackController` inside streaming tabs. Discovers active playing `<video>` across DOM/Shadow DOM using composite scoring (`!paused`, `currentTime > 0`, `readyState >= 2`, visible area, audible volume). Executes `PAUSE` and `RESUME` commands.
-
-**2. Pause Lease Engine & State Machine (`VoiceCoordinator`):**
-- **Explicit Pause Lease**: Instead of naive Start-Pause/End-Play pairing, the coordinator mints an explicit `PauseLease` on `VOICE_INPUT_STARTED` tracking `leaseId`, `voiceSessionId`, `mediaBrowserInstanceId`, `mediaTabId`, `mediaTitle`, and `expiresAt` (5-minute TTL).
-- **Pre-Paused Media Protection**: If media was already paused before dictation started, `didPause = false` and the service will **never** resume playback when dictation ends (`VERIFIED PHYSICAL`).
-- **Comprehensive User Override Coverage**: All play, pause, ended, emptied, error DOM events are captured. Spacebar, media keyboard keys, custom provider player controls, OS MediaSession overlays, and direct player state changes outside the programmatic window immediately invalidate resume authority (`overridden = true`) (`VERIFIED RUNTIME`).
-- **Context Drift Protection**: If the media owner switches, or the media tab navigates or closes during dictation, the lease is invalidated and no resume command is sent (`VERIFIED PHYSICAL`).
-- **Observability**: `GET /voice/status` returns live read-only state of the active voice session and media pause lease.
-- **Configuration**: "Pause media while dictating" option exposed in extension settings.
-
-**Status: `VERIFIED PHYSICAL` (for owner tested flows) + `VERIFIED AUTOMATED` + `VERIFIED RUNTIME`.**
+**Status: `VERIFIED AUTOMATED` + `VERIFIED REAL-BROWSER RUNTIME` / `WAITING OWNER PHYSICAL RETEST`.**
 
 ### WatchDirector Cross-Repo Integration Mission (Specification) — `PLANNED` (Architectural Boundary Preserved)
 

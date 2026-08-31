@@ -232,4 +232,40 @@ describe('VoiceCoordinator & Pause Lease State Machine', () => {
     const realEnd = coordinator.handleVoiceLifecycle('VOICE_INPUT_ENDED', chromeSource, 10, 'sess-1');
     expect(realEnd.actionTaken).toBe('voice_ended_media_resumed');
   });
+
+  it('delivers commands immediately via waitForCommands long-poll', async () => {
+    channelStore.observe({
+      source: braveSource,
+      channel: 'media',
+      payload: {
+        url: 'https://disneyplus.com/play/regular-show',
+        hostname: 'disneyplus.com',
+        rawTitle: 'Regular Show | Disney+',
+        canonicalTitle: 'Regular Show',
+        tabId: 5,
+        windowId: 1,
+        documentTitle: 'Regular Show | Disney+',
+        ogTitle: '',
+        twitterTitle: '',
+        jsonLdTitle: '',
+        jsonLdSeriesTitle: '',
+        timestamp: Date.now(),
+      },
+      tabId: 5,
+      windowId: 1,
+      observationSequence: 1,
+      observedAt: Date.now(),
+    });
+
+    // Start waiting
+    const waitPromise = coordinator.waitForCommands('brave-media', 5000);
+
+    // Enqueue command via voice start
+    coordinator.handleVoiceLifecycle('VOICE_INPUT_STARTED', chromeSource, 10, 'sess-long-poll');
+
+    const cmds = await waitPromise;
+    expect(cmds).toHaveLength(1);
+    expect(cmds[0].action).toBe('PAUSE');
+    expect(cmds[0].tabId).toBe(5);
+  });
 });
