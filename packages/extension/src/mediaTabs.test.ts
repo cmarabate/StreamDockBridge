@@ -162,4 +162,131 @@ describe('which tab owns media', () => {
     expect(() => tracker.noteClosed(12345)).not.toThrow();
     expect(tracker.current()).toBeNull();
   });
+
+  describe('owner physical reproduction and bootstrap reconstruction hierarchy', () => {
+    const THE_VOYEURS = 10;
+    const REGULAR_SHOW = 20;
+
+    it('Owner reproduction: active playing tab wins over background paused tab after reload bootstrap', () => {
+      const tracker = new MediaTabTracker();
+
+      // Bootstrap discovers The Voyeurs (tab index 0, background, not playing)
+      tracker.noteEvidence(THE_VOYEURS, 1, 'https://primevideo.com/the-voyeurs', true, {
+        isActive: false,
+        isPlaying: false,
+        lastAccessed: 1000,
+      });
+
+      // Bootstrap discovers Regular Show (tab index 1, active, playing)
+      tracker.noteEvidence(REGULAR_SHOW, 1, 'https://disneyplus.com/regular-show', true, {
+        isActive: true,
+        isPlaying: true,
+        lastAccessed: 2000,
+      });
+
+      // Deterministic winner MUST be Regular Show
+      expect(tracker.current()!.tabId).toBe(REGULAR_SHOW);
+    });
+
+    it('Background playing tab wins over active paused tab during bootstrap', () => {
+      const tracker = new MediaTabTracker();
+      const BG_PLAYING = 30;
+      const ACTIVE_PAUSED = 40;
+
+      tracker.noteEvidence(ACTIVE_PAUSED, 1, 'https://netflix.com/paused', true, {
+        isActive: true,
+        isPlaying: false,
+        lastAccessed: 2000,
+      });
+
+      tracker.noteEvidence(BG_PLAYING, 1, 'https://youtube.com/playing', true, {
+        isActive: false,
+        isPlaying: true,
+        lastAccessed: 1500,
+      });
+
+      expect(tracker.current()!.tabId).toBe(BG_PLAYING);
+    });
+
+    it('Active playing tab wins over background playing tab', () => {
+      const tracker = new MediaTabTracker();
+      const ACTIVE_PLAYING = 50;
+      const BG_PLAYING = 60;
+
+      tracker.noteEvidence(BG_PLAYING, 1, 'https://youtube.com/stream', true, {
+        isActive: false,
+        isPlaying: true,
+        lastAccessed: 1000,
+      });
+
+      tracker.noteEvidence(ACTIVE_PLAYING, 1, 'https://disneyplus.com/show', true, {
+        isActive: true,
+        isPlaying: true,
+        lastAccessed: 2000,
+      });
+
+      expect(tracker.current()!.tabId).toBe(ACTIVE_PLAYING);
+    });
+
+    it('Active paused tab wins over background paused tab during bootstrap', () => {
+      const tracker = new MediaTabTracker();
+      const ACTIVE_PAUSED = 70;
+      const BG_PAUSED = 80;
+
+      tracker.noteEvidence(BG_PAUSED, 1, 'https://hulu.com/bg', true, {
+        isActive: false,
+        isPlaying: false,
+        lastAccessed: 1000,
+      });
+
+      tracker.noteEvidence(ACTIVE_PAUSED, 1, 'https://disneyplus.com/active', true, {
+        isActive: true,
+        isPlaying: false,
+        lastAccessed: 2000,
+      });
+
+      expect(tracker.current()!.tabId).toBe(ACTIVE_PAUSED);
+    });
+
+    it('Live tab switching: switching to The Voyeurs makes it owner, switching back returns to Regular Show', () => {
+      const tracker = new MediaTabTracker();
+
+      // Bootstrap initial state (Regular Show wins)
+      tracker.noteEvidence(THE_VOYEURS, 1, 'https://primevideo.com/the-voyeurs', true, {
+        isActive: false,
+        isPlaying: false,
+      });
+      tracker.noteEvidence(REGULAR_SHOW, 1, 'https://disneyplus.com/regular-show', true, {
+        isActive: true,
+        isPlaying: true,
+      });
+      expect(tracker.current()!.tabId).toBe(REGULAR_SHOW);
+
+      // User switches to The Voyeurs
+      tracker.noteActivated(THE_VOYEURS, 1, 'https://primevideo.com/the-voyeurs', true, false);
+      expect(tracker.current()!.tabId).toBe(THE_VOYEURS);
+
+      // User switches back to Regular Show
+      tracker.noteActivated(REGULAR_SHOW, 1, 'https://disneyplus.com/regular-show', true, true);
+      expect(tracker.current()!.tabId).toBe(REGULAR_SHOW);
+    });
+
+    it('Heartbeat/rebuild preserves established owner absent stronger evidence', () => {
+      const tracker = new MediaTabTracker();
+      tracker.noteActivated(REGULAR_SHOW, 1, 'https://disneyplus.com/regular-show', true, true);
+      expect(tracker.current()!.tabId).toBe(REGULAR_SHOW);
+
+      // Rebuild passes background evidence
+      tracker.noteEvidence(THE_VOYEURS, 1, 'https://primevideo.com/the-voyeurs', true, {
+        isActive: false,
+        isPlaying: false,
+      });
+      tracker.noteEvidence(REGULAR_SHOW, 1, 'https://disneyplus.com/regular-show', true, {
+        isActive: true,
+        isPlaying: true,
+      });
+
+      expect(tracker.current()!.tabId).toBe(REGULAR_SHOW);
+    });
+  });
 });

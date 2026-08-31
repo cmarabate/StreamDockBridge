@@ -863,11 +863,19 @@ media *search* has no such guard, which is exactly why it must never fall back.
 6. **Strict scheme security**: Non-scriptable schemes (`chrome://`, `brave://`, `edge://`, `devtools://`, `chrome-extension://`, `about:`, `file:`, and Chrome Web Store galleries) are strictly rejected before any script execution.
 
 **Verification & Proof:**
-- **Automated**: 625 tests / 31 test suites passing (`yarn test:ci`, `yarn verify:build`, `yarn verify:ts`, `yarn verify:lint`, `yarn build`, `yarn typecheck`, `yarn lint`, `git diff --check`).
+- **Automated**: 681 tests / 34 test suites passing (`yarn test:ci`, `yarn verify:build`, `yarn verify:ts`, `yarn verify:lint`, `yarn build`, `yarn typecheck`, `yarn lint`, `git diff --check`).
 - **Runtime**: Verified against live service (`127.0.0.1:17337`): simulated reload without page refresh reacquires Regular Show, Context URL lookups resolve to Regular Show in Chrome browser, and missing media fails closed with `no_media_context` / showAlert without falling back to Page.
-- **Adversarial review**: Independent read-only adversarial review passed with PASS / ROBUST across duplicate injection protection, security boundaries, tab race resilience, recency reconstruction, quiet playback preservation, and strict channel isolation.
-
-**Status: `VERIFIED AUTOMATED` + `VERIFIED RUNTIME` / `WAITING OWNER PHYSICAL RETEST`.**
+- **Physical Retest Incident & Root Cause (2026-08-30)**:
+  - *Observation*: With two streaming tabs open in Brave (*The Voyeurs* background + paused, *Regular Show* active + playing), pressing ReelGood after reload resolved *The Voyeurs*. Manually switching *The Voyeurs* -> *Regular Show* corrected ownership.
+  - *Root Cause*: Bootstrap reconstruction previously assigned `order: 0` to all discovered tabs without playback awareness. In the candidate map, the first-discovered tab index (*The Voyeurs*) tied with the active playing tab (*Regular Show* at `0 > 0` = false), allowing a paused background tab to defeat the active playing tab.
+  - *Repair*: Updated `extractPageMetadata` to detect active playback (`isPlaying`), and updated `MediaTabTracker` with a strict authority hierarchy:
+    1. Active playing media in window (`isPlaying === true && isActive === true`)
+    2. Background playing media (`isPlaying === true`)
+    3. Active tab in window (`isActive === true`)
+    4. Explicit live activation order (`order > 0`)
+    5. Last accessed timestamp (`tab.lastAccessed`)
+    6. Deterministic tie-breaker (`tabId`).
+  - *Status*: `VERIFIED AUTOMATED` + `VERIFIED RUNTIME` / `WAITING OWNER PHYSICAL RETEST`.
 
 ### Project-aware Context URL & Closed Local Actions — `DONE` / `VERIFIED AUTOMATED` + `VERIFIED RUNTIME`
 

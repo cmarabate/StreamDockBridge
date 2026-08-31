@@ -16,6 +16,7 @@ export interface PageMetadata {
   ogType?: string;
   jsonLdType?: string;
   hasVideo?: boolean;
+  isPlaying?: boolean;
 }
 
 const MEDIA_TYPES = [
@@ -169,6 +170,7 @@ export function extractPageMetadata(doc: Document): PageMetadata {
      * reappearing inside the channel where isolation cannot help.
      */
     meta.hasVideo = false;
+    meta.isPlaying = false;
     try {
       const videos = doc.querySelectorAll('video');
       for (let v = 0; v < videos.length; v++) {
@@ -177,6 +179,9 @@ export function extractPageMetadata(doc: Document): PageMetadata {
         const hasDuration = typeof video.duration === 'number' && video.duration > 0;
         if (hasSource || hasDuration) {
           meta.hasVideo = true;
+        }
+        if (!video.paused && !video.ended && video.currentTime > 0) {
+          meta.isPlaying = true;
           break;
         }
       }

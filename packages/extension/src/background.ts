@@ -196,7 +196,7 @@ export async function noteTabActivated(tabId: number, windowId: number): Promise
     if (!mediaTabs.has(tabId)) return;
     mediaTabs.noteActivated(tabId, windowId, url, true);
   } else {
-    mediaTabs.noteActivated(tabId, windowId, url, looksLikeMedia(meta));
+    mediaTabs.noteActivated(tabId, windowId, url, looksLikeMedia(meta), meta.isPlaying);
   }
 
   // Only bother the service when ownership actually moved.
@@ -405,7 +405,10 @@ export async function syncActiveContext(retryCount = 0) {
      * to a work page keeps publishing that page's title as media.
      */
     if (meta.hasVideo !== undefined) {
-      mediaTabs.noteEvidence(tabId, tabWindowId, tabUrl, looksLikeMedia(meta));
+      mediaTabs.noteEvidence(tabId, tabWindowId, tabUrl, looksLikeMedia(meta), {
+        isPlaying: meta.isPlaying,
+        lastAccessed: Date.now(),
+      });
     }
 
     const role = await getRole();
@@ -532,6 +535,9 @@ export async function publishMedia(role?: BrowserRole): Promise<void> {
 
   // Silence here costs richer titles, never the channel itself.
   const meta = (await requestMetadata(tab.id, url)) || { documentTitle: tab.title || url };
+  if (meta && meta.isPlaying !== undefined) {
+    mediaTabs.notePlayback(tab.id, meta.isPlaying);
+  }
 
   await postObservation(resolved, 'media', {
     url,
@@ -738,19 +744,17 @@ async function runRebuild(): Promise<void> {
    * accurately preserves user recency.
    */
   const found = results.filter((r) => r.meta && looksLikeMedia(r.meta));
-  const ordered = [
-    ...found.filter((r) => r.tab.active),
-    ...found
-      .filter((r) => !r.tab.active)
-      .sort((a, b) => (b.tab.lastAccessed ?? 0) - (a.tab.lastAccessed ?? 0)),
-  ];
-
-  for (const { tab } of ordered) {
+  for (const { tab, meta } of found) {
     mediaTabs.noteEvidence(
       tab.id as number,
       tab.windowId ?? 0,
       tab.url || tab.pendingUrl || '',
-      true
+      true,
+      {
+        isActive: !!tab.active,
+        isPlaying: !!meta?.isPlaying,
+        lastAccessed: tab.lastAccessed,
+      }
     );
   }
 }
