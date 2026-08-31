@@ -23,6 +23,9 @@ export class ChatGPTVoiceObserver {
 
   constructor(private readonly onStateChange: VoiceObserverCallback) {}
 
+  private unloadHandler: (() => void) | null = null;
+  private visibilityHandler: (() => void) | null = null;
+
   public start(): void {
     this.attach();
     if (typeof window !== 'undefined') {
@@ -31,6 +34,19 @@ export class ChatGPTVoiceObserver {
           this.attach();
         }
       }, 2000);
+
+      this.unloadHandler = () => {
+        this.stop();
+      };
+      this.visibilityHandler = () => {
+        if (typeof document !== 'undefined' && document.hidden) {
+          this.evaluateState();
+        }
+      };
+
+      window.addEventListener('pagehide', this.unloadHandler);
+      window.addEventListener('beforeunload', this.unloadHandler);
+      document.addEventListener('visibilitychange', this.visibilityHandler);
     }
   }
 
@@ -42,6 +58,15 @@ export class ChatGPTVoiceObserver {
     if (this.pollTimer !== null) {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
+    }
+    if (typeof window !== 'undefined' && this.unloadHandler) {
+      window.removeEventListener('pagehide', this.unloadHandler);
+      window.removeEventListener('beforeunload', this.unloadHandler);
+      this.unloadHandler = null;
+    }
+    if (typeof document !== 'undefined' && this.visibilityHandler) {
+      document.removeEventListener('visibilitychange', this.visibilityHandler);
+      this.visibilityHandler = null;
     }
     if (this.isVoiceActive) {
       this.emitState(false);

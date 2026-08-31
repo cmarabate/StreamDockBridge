@@ -223,21 +223,31 @@ export class ProjectRegistryService {
           const raw = fs.readFileSync(vercelJsonPath, 'utf8');
           const v = JSON.parse(raw);
           if (v.orgId) vercelTeam = v.orgId;
-          if (v.projectName || v.projectId) vercelProject = v.projectName || entry.registryKey;
+          if (v.projectName) vercelProject = v.projectName;
+          else if (v.projectId) vercelProject = entry.registryKey;
         }
       } catch (e) {
         // Ignore unreadable config
       }
 
-      // If relatedDomains exists, use primary
+      // Check for non-secret supabase/config.toml project_id if present
+      try {
+        const supabaseTomlPath = path.join(entry.localRepoPath, 'supabase', 'config.toml');
+        if (fs.existsSync(supabaseTomlPath)) {
+          const toml = fs.readFileSync(supabaseTomlPath, 'utf8');
+          const match = toml.match(/project_id\s*=\s*["']([a-zA-Z0-9_-]+)["']/);
+          if (match) {
+            supabaseProjectRef = match[1];
+          }
+        }
+      } catch (e) {
+        // Ignore
+      }
+
+      // If relatedDomains exists, use primary domain strictly from registry
       if (Array.isArray(entry.relatedDomains) && entry.relatedDomains.length > 0) {
         projectDomain = entry.relatedDomains[0];
       }
-    }
-
-    // Default domain if project is on Vercel and domain not set
-    if (!projectDomain && vercelProject) {
-      projectDomain = `${vercelProject}.vercel.app`;
     }
 
     return {

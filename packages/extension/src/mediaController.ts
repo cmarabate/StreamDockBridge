@@ -104,7 +104,8 @@ export function findActiveMediaVideo(root: Document | ShadowRoot = document): HT
 }
 
 export class MediaPlaybackController {
-  private lastProgrammaticActionTime = 0;
+  private lastProgrammaticPauseTime = 0;
+  private lastProgrammaticResumeTime = 0;
   private readonly PROGRAMMATIC_WINDOW_MS = 350;
   private isPausedByExtension = false;
 
@@ -114,15 +115,20 @@ export class MediaPlaybackController {
 
   private attachEventListeners(): void {
     if (typeof document === 'undefined') return;
+    // Captures all playback state changes across direct clicks, spacebar,
+    // media keyboard keys, custom player UI, MediaSession OS controls, and scripts.
     document.addEventListener('play', this.onVideoPlay.bind(this), true);
     document.addEventListener('pause', this.onVideoPause.bind(this), true);
+    document.addEventListener('ended', this.onVideoTerminated.bind(this), true);
+    document.addEventListener('emptied', this.onVideoTerminated.bind(this), true);
+    document.addEventListener('error', this.onVideoTerminated.bind(this), true);
   }
 
   public async pause(): Promise<boolean> {
     const video = findActiveMediaVideo();
     if (!video || video.paused) return false;
 
-    this.lastProgrammaticActionTime = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    this.lastProgrammaticPauseTime = typeof performance !== 'undefined' ? performance.now() : Date.now();
     this.isPausedByExtension = true;
     video.pause();
     return true;
@@ -132,7 +138,7 @@ export class MediaPlaybackController {
     const video = findActiveMediaVideo();
     if (!video) return false;
 
-    this.lastProgrammaticActionTime = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    this.lastProgrammaticResumeTime = typeof performance !== 'undefined' ? performance.now() : Date.now();
     this.isPausedByExtension = false;
 
     try {
@@ -151,12 +157,14 @@ export class MediaPlaybackController {
     if (!target || target.tagName !== 'VIDEO') return;
 
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-    const isProgrammatic = now - this.lastProgrammaticActionTime < this.PROGRAMMATIC_WINDOW_MS;
+    const isProgrammaticResume = now - this.lastProgrammaticResumeTime < this.PROGRAMMATIC_WINDOW_MS;
 
-    if (isProgrammatic) {
+    if (isProgrammaticResume) {
       return;
     }
 
+    // Playback started externally (user clicked play, pressed spacebar, media key,
+    // custom player UI button, or OS media notification).
     if (this.isPausedByExtension) {
       this.isPausedByExtension = false;
       if (this.onUserOverride) {
@@ -170,10 +178,26 @@ export class MediaPlaybackController {
     if (!target || target.tagName !== 'VIDEO') return;
 
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-    const isProgrammatic = now - this.lastProgrammaticActionTime < this.PROGRAMMATIC_WINDOW_MS;
+    const isProgrammaticPause = now - this.lastProgrammaticPauseTime < this.PROGRAMMATIC_WINDOW_MS;
 
-    if (!isProgrammatic) {
+    if (!isProgrammaticPause) {
+      // User or page explicitly paused playback independent of our command.
       this.isPausedByExtension = false;
+      if (this.onUserOverride) {
+        this.onUserOverride();
+      }
+    }
+  }
+
+  private onVideoTerminated(event: Event): void {
+    const target = event.target as HTMLMediaElement;
+    if (!target || target.tagName !== 'VIDEO') return;
+
+    if (this.isPausedByExtension) {
+      this.isPausedByExtension = false;
+      if (this.onUserOverride) {
+        this.onUserOverride();
+      }
     }
   }
 }

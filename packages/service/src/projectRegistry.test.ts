@@ -142,5 +142,12 @@ describe('ProjectRegistryService', () => {
         )
       ).toBeNull();
     });
+
+    it('does not synthesize unverified production domains when relatedDomains is empty', () => {
+      const p = service.resolveProjectFromPage('https://chat.openai.com/g/g-p-99999999-ideaforge');
+      expect(p).not.toBeNull();
+      expect(p?.registryKey).toBe('ideaforge');
+      expect(p?.projectDomain).toBeUndefined();
+    });
   });
 });
