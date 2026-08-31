@@ -819,10 +819,39 @@ same key returned **`no_media_context`** and launched nothing — both for an ex
 `media` key and for an `auto` one. With Brave dedicated and Chrome on `HYBRID`, Chrome's
 media claim was refused as `lost_arbitration`.
 
-**Status: `VERIFIED AUTOMATED` + `VERIFIED RUNTIME` / `WAITING PHYSICAL RETEST`.** The
-owner has not yet repeated the hardware test, and it will only be valid once Brave's
-extension is reloaded onto this build — the Brave instance observed during the failure was
-running an earlier one and had none of the publisher repairs.
+**Adversarial review of the repair found three HIGH issues, all real, all reconciled.**
+
+- `extractPageMetadata` only ever set `hasVideo: true`, never `false`, so an ordinary
+  page's genuine reply was byte-identical to the content script never answering. The
+  "only a real answer changes eligibility" guard therefore never fired, a media tab that
+  navigated to a work page was never demoted, and `publishMedia` publishes the tab's LIVE
+  title — reproducing the owner's failure *inside* the media channel, where isolation
+  cannot help. `hasVideo` is now always set.
+- The Property Inspector never restored `contextMode`: the restore had landed in the input
+  handler rather than `applySettings`, so reopening a page key showed Auto and the next
+  save — a Refresh Icon click sufficed — wrote that back, silently making it a media key.
+- Two browsers on the default `HYBRID` could still fight over media by recency. A general
+  browser may now **claim** a free channel but never **take** a live one.
+
+Also reconciled: a heartbeat omitting `mode` defaulted to `DISABLED` and released every
+channel the browser owned (now a bad request); `rebuildMediaTabs` scanned the first 40 tabs
+in query order and broke ties by tab position, so a leftmost tab with any `<video>` could
+win and a media tab past index 40 was invisible (active tabs are scanned and recorded
+first); and both alarm callbacks could trigger a full tab scan every 30 s forever (rebuilds
+are single-flight with a floor).
+
+Transcribe reads media **then page** again — and that second look is safe there precisely
+because `isSupportedTranscriptionUrl` refuses anything that is not a video platform. A
+media *search* has no such guard, which is exactly why it must never fall back.
+
+**Status: `VERIFIED AUTOMATED` + `VERIFIED RUNTIME` / `WAITING PHYSICAL RETEST`.**
+
+The retest is blocked on one owner action. Brave re-registers with the service within a
+second, but its media channel is empty and its `connectionGeneration` has been stuck at 4
+across many service restarts — its MV3 worker has been alive continuously since then and is
+still running pre-repair code from memory. The manifest also gained `options_ui`, which a
+worker restart alone cannot apply. **The StreamDockBridge extension must be reloaded in
+Brave** before the hardware test measures this build at all.
 
 ### Project-aware Context URL — `INVESTIGATION` (complete) / `BLOCKED` on current-project detection
 
