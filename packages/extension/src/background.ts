@@ -186,12 +186,15 @@ export async function noteTabActivated(tabId: number, windowId: number): Promise
   const wasOwner = mediaTabs.current()?.tabId === tabId;
 
   /**
-   * No answer means we do not know, not that this is not media. A tab we
-   * already believe is playing keeps that standing; one we know nothing about
-   * simply is not promoted.
+   * No answer means we do not know, not that this is not media.
+   *
+   * A tab we already believe is playing keeps that standing AND still becomes
+   * the owner — the user did activate it, and a slow content script must not
+   * cost them the switch. A tab we know nothing about is simply not promoted.
    */
   if (meta === null) {
     if (!mediaTabs.has(tabId)) return;
+    mediaTabs.noteActivated(tabId, windowId, url, true);
   } else {
     mediaTabs.noteActivated(tabId, windowId, url, looksLikeMedia(meta));
   }
@@ -283,13 +286,15 @@ export async function heartbeatTick(): Promise<void> {
     const owned: string[] = Array.isArray(data?.owned) ? data.owned : [];
 
     /**
-     * The service does not hold a channel this browser is supposed to be
-     * publishing — it restarted, or the channel was released while the worker
-     * was asleep. Say everything again rather than waiting for the user to do
-     * something.
+     * The service holds NOTHING for this browser, so it has restarted or our
+     * channels were released while the worker slept. Say everything again.
+     *
+     * Deliberately "none" rather than "any missing": a browser left on the
+     * default HYBRID does not own media when a dedicated media browser has it,
+     * and treating that as a gap would make it re-claim every thirty seconds
+     * and lose arbitration every time.
      */
-    const missing = allowed.filter((c) => c !== 'project' && !owned.includes(c));
-    if (missing.length > 0) await republishAll();
+    if (allowed.length > 0 && owned.length === 0) await republishAll();
   } catch (e) {
     isServiceOffline = true;
   }

@@ -139,6 +139,24 @@ describe('which tab owns media', () => {
     expect(tracker.current()!.windowId).toBe(1);
   });
 
+  /**
+   * A streaming page is heavy and its content script routinely misses a
+   * deadline. Silence must not cost the user the switch they just made: a tab
+   * already known to be media still takes ownership when activated.
+   */
+  it('C-under-timeout: a known media tab still wins activation without fresh evidence', () => {
+    const tracker = new MediaTabTracker();
+    tracker.noteActivated(MEDIA_A, 1, 'https://disneyplus.com/a', true);
+    tracker.noteActivated(MEDIA_B, 1, 'https://primevideo.com/b', true);
+    tracker.noteActivated(MEDIA_A, 1, 'https://disneyplus.com/a', true);
+    expect(tracker.current()!.tabId).toBe(MEDIA_A);
+
+    // B is activated again; its content script says nothing, but B is already
+    // known to be media, so the caller re-activates it as still-eligible.
+    tracker.noteActivated(MEDIA_B, 1, 'https://primevideo.com/b', true);
+    expect(tracker.current()!.tabId).toBe(MEDIA_B);
+  });
+
   it('forgets a tab it never knew when it closes', () => {
     const tracker = new MediaTabTracker();
     expect(() => tracker.noteClosed(12345)).not.toThrow();
