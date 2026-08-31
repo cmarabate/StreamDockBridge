@@ -1,8 +1,13 @@
-import { VoiceCoordinator, VoiceSource } from './voiceCoordinator';
+import {
+  MediaCommandOutcome,
+  PendingMediaCommand,
+  VoiceCoordinator,
+  VoiceSource,
+} from './voiceCoordinator';
 import { ContextChannelStore, SourceIdentity } from './contextChannels';
 
-describe('VoiceCoordinator & Pause Lease State Machine', () => {
-  let channelStore: ContextChannelStore;
+describe('VoiceCoordinator pause ownership', () => {
+  let channels: ContextChannelStore;
   let coordinator: VoiceCoordinator;
 
   const chromeSource: VoiceSource = {
@@ -10,262 +15,301 @@ describe('VoiceCoordinator & Pause Lease State Machine', () => {
     browserFamily: 'chrome',
     displayName: 'Chrome',
     mode: 'WORK_BROWSER',
-    connectionGeneration: 1,
+    connectionGeneration: 7,
   };
-
   const braveSource: SourceIdentity = {
     browserInstanceId: 'brave-media',
     browserFamily: 'brave',
     displayName: 'Brave',
     mode: 'MEDIA_BROWSER',
-    connectionGeneration: 1,
+    connectionGeneration: 4,
   };
 
   beforeEach(() => {
-    channelStore = new ContextChannelStore();
-    coordinator = new VoiceCoordinator(channelStore);
+    channels = new ContextChannelStore();
+    coordinator = new VoiceCoordinator(channels);
   });
 
-  it('handles voice start with no active media', () => {
-    const res = coordinator.handleVoiceLifecycle('VOICE_INPUT_STARTED', chromeSource, 10, 'sess-1');
-    expect(res.success).toBe(true);
-    expect(res.actionTaken).toBe('voice_started_no_media');
-    expect(coordinator.getActiveLease()).toBeNull();
-    expect(coordinator.getStatus().voice.active).toBe(true);
-  });
-
-  it('pauses active playing media on voice start and resumes on voice end', () => {
-    // Populate active media
-    channelStore.observe({
-      source: braveSource,
+  function seedMedia(options: {
+    source?: SourceIdentity;
+    tabId?: number;
+    windowId?: number;
+    sequence?: number;
+    url?: string;
+    documentGeneration?: string;
+    playbackState?: 'playing' | 'paused';
+    title?: string;
+  } = {}): void {
+    const source = options.source ?? braveSource;
+    const tabId = options.tabId ?? 5;
+    const windowId = options.windowId ?? 1;
+    const url = options.url ?? 'https://disneyplus.com/play/regular-show';
+    const title = options.title ?? 'Regular Show';
+    channels.observe({
+      source,
       channel: 'media',
       payload: {
-        url: 'https://disneyplus.com/play/regular-show',
-        hostname: 'disneyplus.com',
-        rawTitle: 'Regular Show | Disney+',
-        canonicalTitle: 'Regular Show',
-        tabId: 5,
-        windowId: 1,
-        documentTitle: 'Regular Show | Disney+',
+        url,
+        hostname: new URL(url).hostname,
+        rawTitle: `${title} | Disney+`,
+        canonicalTitle: title,
+        documentTitle: `${title} | Disney+`,
         ogTitle: '',
         twitterTitle: '',
         jsonLdTitle: '',
         jsonLdSeriesTitle: '',
+        playbackState: options.playbackState ?? 'playing',
+        documentGeneration: options.documentGeneration ?? 'doc-a',
+        tabId,
+        windowId,
         timestamp: Date.now(),
       },
-      tabId: 5,
-      windowId: 1,
-      observationSequence: 1,
+      tabId,
+      windowId,
+      observationSequence: options.sequence ?? 1,
       observedAt: Date.now(),
     });
+  }
 
-    const startRes = coordinator.handleVoiceLifecycle('VOICE_INPUT_STARTED', chromeSource, 10, 'sess-1');
-    expect(startRes.success).toBe(true);
-    expect(startRes.actionTaken).toBe('voice_started_media_paused');
+  function startAndDeliver(sessionId = 'sess-1'): PendingMediaCommand {
+    const result = coordinator.handleVoiceLifecycle(
+      'VOICE_INPUT_STARTED',
+      chromeSource,
+      10,
+      sessionId
+    );
+    expect(result.actionTaken).toBe('voice_started_pause_pending');
+    const commands = coordinator.getPendingCommands('brave-media');
+    expect(commands).toHaveLength(1);
+    return commands[0];
+  }
 
-    const lease = coordinator.getActiveLease();
-    expect(lease).toBeDefined();
-    expect(lease?.mediaBrowserInstanceId).toBe('brave-media');
-    expect(lease?.mediaTabId).toBe(5);
-    expect(lease?.mediaTitle).toBe('Regular Show');
-    expect(lease?.didPause).toBe(true);
-    expect(lease?.overridden).toBe(false);
+  function acknowledge(
+    command: PendingMediaCommand,
+    outcome: MediaCommandOutcome,
+    initialPlayback: 'playing' | 'paused' | 'unknown',
+    finalPlayback: 'playing' | 'paused' | 'unknown',
+    documentGeneration = 'doc-a',
+    mediaTargetId = 'media-1'
+  ) {
+    return coordinator.acknowledgeMediaCommand({
+      commandId: command.commandId,
+      browserInstanceId: command.browserInstanceId,
+      connectionGeneration: command.connectionGeneration,
+      tabId: command.tabId,
+      action: command.action,
+      outcome,
+      initialPlayback,
+      finalPlayback,
+      documentGeneration,
+      mediaTargetId,
+    });
+  }
 
-    // Verify pending command for brave
-    const cmds = coordinator.getPendingCommands('brave-media');
-    expect(cmds).toHaveLength(1);
-    expect(cmds[0].action).toBe('PAUSE');
-    expect(cmds[0].tabId).toBe(5);
+  it('authorizes normal resume only after a confirmed playing-to-paused transition', () => {
+    seedMedia();
+    const pause = startAndDeliver();
+    expect(coordinator.getActiveLease()?.didPause).toBe(false);
+    expect(coordinator.getActiveLease()?.resumeAuthorized).toBe(false);
 
-    // End voice session
-    const endRes = coordinator.handleVoiceLifecycle('VOICE_INPUT_ENDED', chromeSource, 10, 'sess-1');
-    expect(endRes.success).toBe(true);
-    expect(endRes.actionTaken).toBe('voice_ended_media_resumed');
+    expect(acknowledge(pause, 'CHANGED', 'playing', 'paused').actionTaken).toBe(
+      'pause_ack_changed_resume_authorized'
+    );
+    expect(coordinator.getStatus().mediaAutoPause).toMatchObject({
+      initialPlayback: 'playing',
+      didPause: true,
+      resumeAuthorized: true,
+      overridden: false,
+    });
 
-    const resumeCmds = coordinator.getPendingCommands('brave-media');
-    expect(resumeCmds).toHaveLength(1);
-    expect(resumeCmds[0].action).toBe('RESUME');
-    expect(resumeCmds[0].tabId).toBe(5);
-
-    expect(coordinator.getActiveLease()).toBeNull();
+    const end = coordinator.handleVoiceLifecycle(
+      'VOICE_INPUT_ENDED',
+      chromeSource,
+      10,
+      'sess-1'
+    );
+    expect(end.actionTaken).toBe('voice_ended_media_resume_queued');
+    const resume = coordinator.getPendingCommands('brave-media');
+    expect(resume).toHaveLength(1);
+    expect(resume[0]).toMatchObject({
+      action: 'RESUME',
+      expectedDocumentGeneration: 'doc-a',
+      expectedMediaTargetId: 'media-1',
+      connectionGeneration: 4,
+    });
   });
 
-  it('does not resume if user manually overrode playback during voice session', () => {
-    channelStore.observe({
-      source: braveSource,
-      channel: 'media',
-      payload: {
-        url: 'https://disneyplus.com/play/regular-show',
-        hostname: 'disneyplus.com',
-        rawTitle: 'Regular Show | Disney+',
-        canonicalTitle: 'Regular Show',
-        tabId: 5,
-        windowId: 1,
-        documentTitle: 'Regular Show | Disney+',
-        ogTitle: '',
-        twitterTitle: '',
-        jsonLdTitle: '',
-        jsonLdSeriesTitle: '',
-        timestamp: Date.now(),
-      },
-      tabId: 5,
-      windowId: 1,
-      observationSequence: 1,
-      observedAt: Date.now(),
-    });
-
-    coordinator.handleVoiceLifecycle('VOICE_INPUT_STARTED', chromeSource, 10, 'sess-1');
-    expect(coordinator.getActiveLease()?.didPause).toBe(true);
-    coordinator.getPendingCommands('brave-media'); // drain initial pause command
-
-    // User manual override occurs
-    coordinator.handleUserOverride('brave-media', 5);
-    expect(coordinator.getActiveLease()?.overridden).toBe(true);
-
-    // End voice session
-    const endRes = coordinator.handleVoiceLifecycle('VOICE_INPUT_ENDED', chromeSource, 10, 'sess-1');
-    expect(endRes.success).toBe(true);
-    expect(endRes.actionTaken).toBe('user_override_prevented_resume');
-
-    // No resume command queued
-    const resumeCmds = coordinator.getPendingCommands('brave-media');
-    expect(resumeCmds).toHaveLength(0);
-  });
-
-  it('does not resume if media owner changed to a different tab or browser', () => {
-    channelStore.observe({
-      source: braveSource,
-      channel: 'media',
-      payload: {
-        url: 'https://disneyplus.com/play/regular-show',
-        hostname: 'disneyplus.com',
-        rawTitle: 'Regular Show | Disney+',
-        canonicalTitle: 'Regular Show',
-        tabId: 5,
-        windowId: 1,
-        documentTitle: 'Regular Show | Disney+',
-        ogTitle: '',
-        twitterTitle: '',
-        jsonLdTitle: '',
-        jsonLdSeriesTitle: '',
-        timestamp: Date.now(),
-      },
-      tabId: 5,
-      windowId: 1,
-      observationSequence: 1,
-      observedAt: Date.now(),
-    });
-
-    coordinator.handleVoiceLifecycle('VOICE_INPUT_STARTED', chromeSource, 10, 'sess-1');
-    coordinator.getPendingCommands('brave-media'); // drain initial pause command
-
-    // Media changes to Futurama in tab 6
-    channelStore.observe({
-      source: braveSource,
-      channel: 'media',
-      payload: {
-        url: 'https://hulu.com/watch/futurama',
-        hostname: 'hulu.com',
-        rawTitle: 'Futurama | Hulu',
-        canonicalTitle: 'Futurama',
-        tabId: 6,
-        windowId: 1,
-        documentTitle: 'Futurama | Hulu',
-        ogTitle: '',
-        twitterTitle: '',
-        jsonLdTitle: '',
-        jsonLdSeriesTitle: '',
-        timestamp: Date.now() + 100,
-      },
-      tabId: 6,
-      windowId: 1,
-      observationSequence: 2,
-      observedAt: Date.now() + 100,
-    });
-
-    const endRes = coordinator.handleVoiceLifecycle('VOICE_INPUT_ENDED', chromeSource, 10, 'sess-1');
-    expect(endRes.success).toBe(true);
-    expect(endRes.actionTaken).toBe('media_owner_changed_no_resume');
-
-    const resumeCmds = coordinator.getPendingCommands('brave-media');
-    expect(resumeCmds).toHaveLength(0);
-  });
-
-  it('ignores duplicate START and stale END events idempotently', () => {
-    channelStore.observe({
-      source: braveSource,
-      channel: 'media',
-      payload: {
-        url: 'https://disneyplus.com/play/regular-show',
-        hostname: 'disneyplus.com',
-        rawTitle: 'Regular Show | Disney+',
-        canonicalTitle: 'Regular Show',
-        tabId: 5,
-        windowId: 1,
-        documentTitle: 'Regular Show | Disney+',
-        ogTitle: '',
-        twitterTitle: '',
-        jsonLdTitle: '',
-        jsonLdSeriesTitle: '',
-        timestamp: Date.now(),
-      },
-      tabId: 5,
-      windowId: 1,
-      observationSequence: 1,
-      observedAt: Date.now(),
-    });
-
-    // Start session 1
-    coordinator.handleVoiceLifecycle('VOICE_INPUT_STARTED', chromeSource, 10, 'sess-1');
-    coordinator.getPendingCommands('brave-media'); // drain
-
-    // Duplicate start
-    const dupRes = coordinator.handleVoiceLifecycle('VOICE_INPUT_STARTED', chromeSource, 10, 'sess-1');
-    expect(dupRes.actionTaken).toBe('duplicate_start_ignored');
+  it('suppresses PAUSE and never resumes media already paused at START', () => {
+    seedMedia({ playbackState: 'paused' });
+    const start = coordinator.handleVoiceLifecycle(
+      'VOICE_INPUT_STARTED',
+      chromeSource,
+      10,
+      'sess-prepaused'
+    );
+    expect(start.actionTaken).toBe('voice_started_media_already_paused');
     expect(coordinator.getPendingCommands('brave-media')).toHaveLength(0);
-
-    // Stale end from unknown session
-    const staleEnd = coordinator.handleVoiceLifecycle('VOICE_INPUT_ENDED', chromeSource, 10, 'sess-old');
-    expect(staleEnd.actionTaken).toBe('stale_or_unknown_end_ignored');
-
-    // Honest end
-    const realEnd = coordinator.handleVoiceLifecycle('VOICE_INPUT_ENDED', chromeSource, 10, 'sess-1');
-    expect(realEnd.actionTaken).toBe('voice_ended_media_resumed');
-  });
-
-  it('delivers commands immediately via waitForCommands long-poll', async () => {
-    channelStore.observe({
-      source: braveSource,
-      channel: 'media',
-      payload: {
-        url: 'https://disneyplus.com/play/regular-show',
-        hostname: 'disneyplus.com',
-        rawTitle: 'Regular Show | Disney+',
-        canonicalTitle: 'Regular Show',
-        tabId: 5,
-        windowId: 1,
-        documentTitle: 'Regular Show | Disney+',
-        ogTitle: '',
-        twitterTitle: '',
-        jsonLdTitle: '',
-        jsonLdSeriesTitle: '',
-        timestamp: Date.now(),
-      },
-      tabId: 5,
-      windowId: 1,
-      observationSequence: 1,
-      observedAt: Date.now(),
+    expect(coordinator.getStatus().mediaAutoPause).toMatchObject({
+      initialPlayback: 'paused',
+      didPause: false,
+      resumeAuthorized: false,
     });
 
-    // Start waiting
-    const waitPromise = coordinator.waitForCommands('brave-media', 5000);
+    const end = coordinator.handleVoiceLifecycle(
+      'VOICE_INPUT_ENDED',
+      chromeSource,
+      10,
+      'sess-prepaused'
+    );
+    expect(end.actionTaken).toBe('pre_paused_or_unconfirmed_media_not_resumed');
+    expect(coordinator.getPendingCommands('brave-media')).toHaveLength(0);
+  });
 
-    // Enqueue command via voice start
-    coordinator.handleVoiceLifecycle('VOICE_INPUT_STARTED', chromeSource, 10, 'sess-long-poll');
+  it.each(['ALREADY_IN_STATE', 'NOT_FOUND', 'FAILED', 'STALE_TARGET'] as MediaCommandOutcome[])(
+    'does not acquire ownership from %s',
+    (outcome) => {
+      seedMedia({ playbackState: undefined });
+      const pause = startAndDeliver();
+      const initial = outcome === 'ALREADY_IN_STATE' ? 'paused' : 'unknown';
+      acknowledge(pause, outcome, initial, initial);
+      expect(coordinator.getActiveLease()).toMatchObject({
+        didPause: false,
+        resumeAuthorized: false,
+      });
+      coordinator.handleVoiceLifecycle('VOICE_INPUT_ENDED', chromeSource, 10, 'sess-1');
+      expect(coordinator.getPendingCommands('brave-media')).toHaveLength(0);
+    }
+  );
 
-    const cmds = await waitPromise;
-    expect(cmds).toHaveLength(1);
-    expect(cmds[0].action).toBe('PAUSE');
-    expect(cmds[0].tabId).toBe(5);
+  it('invalidates ownership when the user resumes during Dictate, even before ACK arrives', () => {
+    seedMedia();
+    const pause = startAndDeliver();
+    const lease = coordinator.getActiveLease()!;
+    expect(
+      coordinator.handleUserOverride('brave-media', 5, {
+        connectionGeneration: 4,
+        leaseId: lease.leaseId,
+        pauseCommandId: pause.commandId,
+        documentGeneration: 'doc-a',
+        mediaTargetId: 'media-1',
+      })
+    ).toBe(true);
+    acknowledge(pause, 'CHANGED', 'playing', 'paused');
+    expect(coordinator.getActiveLease()).toMatchObject({
+      didPause: true,
+      resumeAuthorized: false,
+      overridden: true,
+    });
+    const end = coordinator.handleVoiceLifecycle(
+      'VOICE_INPUT_ENDED',
+      chromeSource,
+      10,
+      'sess-1'
+    );
+    expect(end.actionTaken).toBe('user_override_prevented_resume');
+    expect(coordinator.getPendingCommands('brave-media')).toHaveLength(0);
+  });
+
+  it('never resumes a different media owner', () => {
+    seedMedia();
+    const pause = startAndDeliver();
+    acknowledge(pause, 'CHANGED', 'playing', 'paused');
+    seedMedia({ tabId: 6, sequence: 2, url: 'https://hulu.com/watch/futurama', title: 'Futurama', documentGeneration: 'doc-b' });
+
+    const end = coordinator.handleVoiceLifecycle(
+      'VOICE_INPUT_ENDED',
+      chromeSource,
+      10,
+      'sess-1'
+    );
+    expect(end.actionTaken).toBe('media_owner_or_generation_changed_no_resume');
+    expect(coordinator.getPendingCommands('brave-media')).toHaveLength(0);
+  });
+
+  it('fails closed on same-tab navigation or document replacement', () => {
+    seedMedia();
+    const pause = startAndDeliver();
+    acknowledge(pause, 'CHANGED', 'playing', 'paused');
+    seedMedia({ sequence: 2, documentGeneration: 'doc-replaced' });
+    const end = coordinator.handleVoiceLifecycle(
+      'VOICE_INPUT_ENDED',
+      chromeSource,
+      10,
+      'sess-1'
+    );
+    expect(end.actionTaken).toBe('media_owner_or_generation_changed_no_resume');
+    expect(coordinator.getPendingCommands('brave-media')).toHaveLength(0);
+  });
+
+  it('fails closed after the media browser worker generation changes', () => {
+    seedMedia();
+    const pause = startAndDeliver();
+    acknowledge(pause, 'CHANGED', 'playing', 'paused');
+    seedMedia({ source: { ...braveSource, connectionGeneration: 5 }, sequence: 1 });
+    const end = coordinator.handleVoiceLifecycle(
+      'VOICE_INPUT_ENDED',
+      chromeSource,
+      10,
+      'sess-1'
+    );
+    expect(end.actionTaken).toBe('media_owner_or_generation_changed_no_resume');
+    expect(coordinator.getPendingCommands('brave-media')).toHaveLength(0);
+  });
+
+  it('ignores distinct duplicate START, wrong-producer END, and duplicate END', () => {
+    seedMedia();
+    const pause = startAndDeliver();
+    expect(
+      coordinator.handleVoiceLifecycle('VOICE_INPUT_STARTED', chromeSource, 10, 'sess-2')
+        .actionTaken
+    ).toBe('overlapping_start_ignored');
+    expect(coordinator.getPendingCommands('brave-media')).toHaveLength(0);
+    expect(
+      coordinator.handleVoiceLifecycle(
+        'VOICE_INPUT_ENDED',
+        { ...chromeSource, connectionGeneration: 8 },
+        10,
+        'sess-1'
+      ).actionTaken
+    ).toBe('stale_or_unknown_end_ignored');
+
+    acknowledge(pause, 'CHANGED', 'playing', 'paused');
+    expect(
+      coordinator.handleVoiceLifecycle('VOICE_INPUT_ENDED', chromeSource, 10, 'sess-1')
+        .actionTaken
+    ).toBe('voice_ended_media_resume_queued');
+    expect(
+      coordinator.handleVoiceLifecycle('VOICE_INPUT_ENDED', chromeSource, 10, 'sess-1')
+        .actionTaken
+    ).toBe('stale_or_unknown_end_ignored');
+  });
+
+  it('waits for an in-flight PAUSE ACK after END and resumes only if it proves ownership', () => {
+    seedMedia();
+    const pause = startAndDeliver();
+    const end = coordinator.handleVoiceLifecycle(
+      'VOICE_INPUT_ENDED',
+      chromeSource,
+      10,
+      'sess-1'
+    );
+    expect(end.actionTaken).toBe('voice_ended_waiting_for_pause_ack');
+    expect(acknowledge(pause, 'CHANGED', 'playing', 'paused').actionTaken).toBe(
+      'voice_ended_media_resume_queued'
+    );
+    expect(coordinator.getPendingCommands('brave-media')).toHaveLength(1);
+  });
+
+  it('cancels an undelivered PAUSE when END arrives first', () => {
+    seedMedia();
+    coordinator.handleVoiceLifecycle('VOICE_INPUT_STARTED', chromeSource, 10, 'sess-1');
+    const end = coordinator.handleVoiceLifecycle(
+      'VOICE_INPUT_ENDED',
+      chromeSource,
+      10,
+      'sess-1'
+    );
+    expect(end.actionTaken).toBe('voice_ended_pause_cancelled');
+    expect(coordinator.getPendingCommands('brave-media')).toHaveLength(0);
   });
 });

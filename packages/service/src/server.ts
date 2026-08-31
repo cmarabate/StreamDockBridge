@@ -28,7 +28,13 @@ import {
   LocalProjectAction,
   LOCAL_PROJECT_ACTIONS,
 } from './localActions';
-import { VoiceCoordinator } from './voiceCoordinator';
+import {
+  MediaCommandAcknowledgement,
+  MediaCommandAction,
+  MediaCommandOutcome,
+  PlaybackState,
+  VoiceCoordinator,
+} from './voiceCoordinator';
 
 export const projectRegistry = new ProjectRegistryService();
 export const voiceCoordinator = new VoiceCoordinator(contextChannels);
@@ -325,6 +331,14 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
             jsonLdTitle: rawRecord.jsonLdTitle || '',
             jsonLdSeriesTitle: rawRecord.jsonLdSeriesTitle || '',
             canonicalTitle: cleanedTitle,
+            playbackState:
+              rawRecord.playbackState === 'playing' || rawRecord.playbackState === 'paused'
+                ? rawRecord.playbackState
+                : undefined,
+            documentGeneration:
+              typeof rawRecord.documentGeneration === 'string' && rawRecord.documentGeneration
+                ? rawRecord.documentGeneration.slice(0, 128)
+                : undefined,
             tabId: rawRecord.tabId ?? payload.tabId ?? 0,
             windowId: rawRecord.windowId ?? payload.windowId ?? 0,
             timestamp,
@@ -914,6 +928,74 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
       return;
     }
 
+    /** Exact execution result for one delivered media command. */
+    if (req.method === 'POST' && pathname === '/media/commands/ack') {
+      if (!isAllowedOrigin(origin, allowAnyExtension)) {
+        sendJson(403, { success: false, error: 'origin_forbidden' });
+        return;
+      }
+      const clientSecret = req.headers['x-bridge-secret'];
+      if (!secretStore.verifySecret(clientSecret as string | undefined)) {
+        sendJson(401, { success: false, error: 'unauthorized' });
+        return;
+      }
+
+      let body = '';
+      req.on('data', (chunk) => {
+        body += chunk;
+      });
+      req.on('end', () => {
+        try {
+          const payload = JSON.parse(body);
+          const actions: MediaCommandAction[] = ['PAUSE', 'RESUME'];
+          const outcomes: MediaCommandOutcome[] = [
+            'CHANGED',
+            'ALREADY_IN_STATE',
+            'NOT_FOUND',
+            'FAILED',
+            'STALE_TARGET',
+          ];
+          const playbackStates: PlaybackState[] = ['playing', 'paused', 'unknown'];
+          if (
+            typeof payload.commandId !== 'string' ||
+            typeof payload.browserInstanceId !== 'string' ||
+            typeof payload.connectionGeneration !== 'number' ||
+            typeof payload.tabId !== 'number' ||
+            !actions.includes(payload.action) ||
+            !outcomes.includes(payload.outcome) ||
+            !playbackStates.includes(payload.initialPlayback) ||
+            !playbackStates.includes(payload.finalPlayback)
+          ) {
+            sendJson(400, { success: false, error: 'invalid_media_command_ack' });
+            return;
+          }
+
+          const acknowledgement: MediaCommandAcknowledgement = {
+            commandId: payload.commandId,
+            browserInstanceId: payload.browserInstanceId,
+            connectionGeneration: payload.connectionGeneration,
+            tabId: payload.tabId,
+            action: payload.action,
+            outcome: payload.outcome,
+            initialPlayback: payload.initialPlayback,
+            finalPlayback: payload.finalPlayback,
+            documentGeneration:
+              typeof payload.documentGeneration === 'string'
+                ? payload.documentGeneration.slice(0, 128)
+                : undefined,
+            mediaTargetId:
+              typeof payload.mediaTargetId === 'string'
+                ? payload.mediaTargetId.slice(0, 128)
+                : undefined,
+          };
+          sendJson(200, voiceCoordinator.acknowledgeMediaCommand(acknowledgement));
+        } catch (_error) {
+          sendJson(400, { success: false, error: 'invalid_json' });
+        }
+      });
+      return;
+    }
+
     /**
      * Content script reports that the user manually clicked Play during a pause lease.
      */
@@ -937,11 +1019,23 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
       req.on('end', () => {
         try {
           const payload = JSON.parse(body);
-          const { browserInstanceId, tabId } = payload;
-          if (browserInstanceId && typeof tabId === 'number') {
-            voiceCoordinator.handleUserOverride(browserInstanceId, tabId);
-          }
-          sendJson(200, { success: true });
+          const {
+            browserInstanceId,
+            connectionGeneration,
+            tabId,
+            leaseId,
+            pauseCommandId,
+            documentGeneration,
+            mediaTargetId,
+          } = payload;
+          const overridden = voiceCoordinator.handleUserOverride(browserInstanceId, tabId, {
+            connectionGeneration,
+            leaseId,
+            pauseCommandId,
+            documentGeneration,
+            mediaTargetId,
+          });
+          sendJson(200, { success: true, overridden });
         } catch (e) {
           sendJson(400, { success: false, error: 'invalid_json' });
         }

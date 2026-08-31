@@ -1,9 +1,11 @@
 import { extractPageMetadata, PageMetadata } from './metadata';
 import { ChatGPTVoiceObserver } from './voiceObserver';
-import { MediaPlaybackController } from './mediaController';
+import { MediaPlaybackController, MediaCommandRequest } from './mediaController';
+
+const documentGeneration = `document-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
 export function getPageMetadata(): PageMetadata {
-  return extractPageMetadata(document);
+  return { ...extractPageMetadata(document), documentGeneration };
 }
 
 let mediaController: MediaPlaybackController | null = null;
@@ -26,9 +28,9 @@ export function initContentScript(): void {
   try {
     // 1. Initialize Media Playback Controller
     if (!mediaController) {
-      mediaController = new MediaPlaybackController(() => {
+      mediaController = new MediaPlaybackController(documentGeneration, (evidence) => {
         try {
-          chrome.runtime.sendMessage({ action: 'MEDIA_PLAYBACK_OVERRIDDEN' });
+          chrome.runtime.sendMessage({ action: 'MEDIA_PLAYBACK_OVERRIDDEN', evidence });
         } catch (e) {
           void e;
         }
@@ -62,17 +64,34 @@ export function initContentScript(): void {
       }
 
       if (message && message.action === 'EXECUTE_MEDIA_COMMAND') {
-        if (message.command === 'PAUSE' && mediaController) {
-          mediaController.pause().then((paused) => {
-            sendResponse({ success: true, paused });
-          });
-          return true; // async
-        }
-        if (message.command === 'RESUME' && mediaController) {
-          mediaController.resume().then((resumed) => {
-            sendResponse({ success: true, resumed });
-          });
-          return true; // async
+        if ((message.command === 'PAUSE' || message.command === 'RESUME') && mediaController) {
+          const request: MediaCommandRequest = {
+            commandId: String(message.commandId || ''),
+            leaseId: String(message.leaseId || ''),
+            command: message.command,
+            expectedDocumentGeneration:
+              typeof message.expectedDocumentGeneration === 'string'
+                ? message.expectedDocumentGeneration
+                : undefined,
+            expectedMediaTargetId:
+              typeof message.expectedMediaTargetId === 'string'
+                ? message.expectedMediaTargetId
+                : undefined,
+          };
+          mediaController
+            .execute(request)
+            .then(sendResponse)
+            .catch(() =>
+              sendResponse({
+                commandId: request.commandId,
+                action: request.command,
+                outcome: 'FAILED',
+                initialPlayback: 'unknown',
+                finalPlayback: 'unknown',
+                documentGeneration,
+              })
+            );
+          return true;
         }
       }
     });

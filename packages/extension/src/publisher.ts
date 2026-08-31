@@ -19,6 +19,8 @@ export interface PagePayload {
   twitterTitle?: string;
   jsonLdTitle?: string;
   jsonLdSeriesTitle?: string;
+  playbackState?: 'playing' | 'paused';
+  documentGeneration?: string;
   tabId: number;
   windowId: number;
 }

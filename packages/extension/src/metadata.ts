@@ -17,6 +17,8 @@ export interface PageMetadata {
   jsonLdType?: string;
   hasVideo?: boolean;
   isPlaying?: boolean;
+  /** Per-document token; populated by the content script, not page content. */
+  documentGeneration?: string;
 }
 
 const MEDIA_TYPES = [

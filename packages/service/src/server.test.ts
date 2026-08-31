@@ -2,7 +2,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { createBridgeServer, isAllowedOrigin, ALLOWED_EXTENSION_ORIGIN } from './server';
+import {
+  createBridgeServer,
+  isAllowedOrigin,
+  ALLOWED_EXTENSION_ORIGIN,
+  voiceCoordinator,
+} from './server';
 import { contextStore } from './contextStore';
 import { SecretStore } from './secretStore';
 
@@ -41,6 +46,7 @@ describe('Bridge Server Pinned Origin & Security Tests', () => {
 
   beforeEach(() => {
     contextStore.clear();
+    voiceCoordinator.clear();
     launchedUrls = [];
   });
 
@@ -115,5 +121,120 @@ describe('Bridge Server Pinned Origin & Security Tests', () => {
     expect(res.statusCode).toBe(200);
     expect(res.data.success).toBe(true);
     expect(res.data.record.canonicalTitle).toBe('Dandadan');
+  });
+
+  it('correlates a real media command ACK before authorizing RESUME', async () => {
+    const secret = secretStore.getSecret();
+    const headers = {
+      Origin: ALLOWED_EXTENSION_ORIGIN,
+      'Content-Type': 'application/json',
+      'X-Bridge-Secret': secret,
+    };
+    const brave = {
+      browserInstanceId: 'brave-media',
+      browserFamily: 'brave',
+      displayName: 'Brave',
+      mode: 'MEDIA_BROWSER',
+      connectionGeneration: 3,
+    };
+    const chrome = {
+      browserInstanceId: 'chrome-work',
+      browserFamily: 'chrome',
+      displayName: 'Chrome',
+      mode: 'WORK_BROWSER',
+      connectionGeneration: 8,
+    };
+
+    expect(
+      (
+        await request('POST', '/context', headers, {
+          source: brave,
+          channel: 'media',
+          observationSequence: 1,
+          timestamp: Date.now(),
+          url: 'https://example.test/show',
+          hostname: 'example.test',
+          rawTitle: 'Test Show',
+          documentTitle: 'Test Show',
+          playbackState: 'playing',
+          documentGeneration: 'doc-live',
+          tabId: 12,
+          windowId: 2,
+        })
+      ).statusCode
+    ).toBe(200);
+
+    const start = await request('POST', '/voice/lifecycle', headers, {
+      event: 'VOICE_INPUT_STARTED',
+      source: chrome,
+      tabId: 99,
+      sessionId: 'voice-live',
+      provider: 'chatgpt',
+    });
+    expect(start.data.actionTaken).toBe('voice_started_pause_pending');
+
+    const pending = await request(
+      'GET',
+      '/media/commands?browserInstanceId=brave-media',
+      headers
+    );
+    const pause = pending.data.commands[0];
+    expect(pause).toMatchObject({ action: 'PAUSE', connectionGeneration: 3, tabId: 12 });
+
+    const ack = await request('POST', '/media/commands/ack', headers, {
+      commandId: pause.commandId,
+      browserInstanceId: 'brave-media',
+      connectionGeneration: 3,
+      tabId: 12,
+      action: 'PAUSE',
+      outcome: 'CHANGED',
+      initialPlayback: 'playing',
+      finalPlayback: 'paused',
+      documentGeneration: 'doc-live',
+      mediaTargetId: 'media-live',
+    });
+    expect(ack.data.actionTaken).toBe('pause_ack_changed_resume_authorized');
+
+    const status = await request('GET', '/voice/status', headers);
+    expect(status.data.mediaAutoPause).toMatchObject({
+      didPause: true,
+      resumeAuthorized: true,
+      initialPlayback: 'playing',
+    });
+
+    const end = await request('POST', '/voice/lifecycle', headers, {
+      event: 'VOICE_INPUT_ENDED',
+      source: chrome,
+      tabId: 99,
+      sessionId: 'voice-live',
+      provider: 'chatgpt',
+    });
+    expect(end.data.actionTaken).toBe('voice_ended_media_resume_queued');
+    const resume = await request(
+      'GET',
+      '/media/commands?browserInstanceId=brave-media',
+      headers
+    );
+    expect(resume.data.commands[0]).toMatchObject({
+      action: 'RESUME',
+      expectedDocumentGeneration: 'doc-live',
+      expectedMediaTargetId: 'media-live',
+    });
+  });
+
+  it('keeps command acknowledgement authenticated and typed', async () => {
+    const unauthorized = await request('POST', '/media/commands/ack', {
+      Origin: ALLOWED_EXTENSION_ORIGIN,
+      'Content-Type': 'application/json',
+    }, {});
+    expect(unauthorized.statusCode).toBe(401);
+
+    const invalid = await request('POST', '/media/commands/ack', {
+      Origin: ALLOWED_EXTENSION_ORIGIN,
+      'Content-Type': 'application/json',
+      'X-Bridge-Secret': secretStore.getSecret(),
+    }, { commandId: 'missing-fields' });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.data.error).toBe('invalid_media_command_ack');
   });
 });

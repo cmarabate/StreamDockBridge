@@ -548,6 +548,13 @@ export async function publishMedia(role?: BrowserRole): Promise<void> {
     twitterTitle: meta.twitterTitle,
     jsonLdTitle: meta.jsonLdTitle,
     jsonLdSeriesTitle: meta.jsonLdSeriesTitle,
+    playbackState:
+      typeof meta.isPlaying === 'boolean'
+        ? meta.isPlaying
+          ? 'playing'
+          : 'paused'
+        : undefined,
+    documentGeneration: meta.documentGeneration,
     tabId: tab.id,
     windowId: tab.windowId ?? owner.windowId,
   });
@@ -808,23 +815,69 @@ try {
 }
 
 let voiceSessionCounter = 0;
-let currentVoiceSessionId: string | null = null;
+const voiceSessionsByTab = new Map<number, string>();
+const voiceLifecycleChains = new Map<number, Promise<void>>();
+
+interface MediaCommandResultPayload {
+  commandId: string;
+  action: 'PAUSE' | 'RESUME';
+  outcome: 'CHANGED' | 'ALREADY_IN_STATE' | 'NOT_FOUND' | 'FAILED' | 'STALE_TARGET';
+  initialPlayback: 'playing' | 'paused' | 'unknown';
+  finalPlayback: 'playing' | 'paused' | 'unknown';
+  documentGeneration?: string;
+  mediaTargetId?: string;
+}
+
+interface ServiceMediaCommand {
+  commandId: string;
+  leaseId: string;
+  browserInstanceId: string;
+  connectionGeneration: number;
+  tabId: number;
+  windowId: number;
+  mediaUrl: string;
+  action: 'PAUSE' | 'RESUME';
+  expectedDocumentGeneration?: string;
+  expectedMediaTargetId?: string;
+  expiresAt: number;
+}
+
+export function queueVoiceLifecycleMessage(
+  message: any,
+  sender: chrome.runtime.MessageSender
+): void {
+  const tabId = sender.tab?.id ?? 0;
+  const previous = voiceLifecycleChains.get(tabId) ?? Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    .then(() => handleVoiceLifecycleMessage(message, sender));
+  voiceLifecycleChains.set(tabId, next);
+  void next.finally(() => {
+    if (voiceLifecycleChains.get(tabId) === next) voiceLifecycleChains.delete(tabId);
+  });
+}
 
 export async function handleVoiceLifecycleMessage(message: any, sender: chrome.runtime.MessageSender): Promise<void> {
+  const tabId = sender.tab?.id ?? 0;
+  const event = message.event;
+  if (event !== 'VOICE_INPUT_STARTED' && event !== 'VOICE_INPUT_ENDED') return;
+
+  let sessionId: string;
+  if (event === 'VOICE_INPUT_STARTED') {
+    sessionId =
+      voiceSessionsByTab.get(tabId) || `voice-${Date.now()}-${++voiceSessionCounter}`;
+    voiceSessionsByTab.set(tabId, sessionId);
+  } else {
+    const activeSessionId = voiceSessionsByTab.get(tabId);
+    if (!activeSessionId) return;
+    sessionId = activeSessionId;
+    voiceSessionsByTab.delete(tabId);
+  }
+
   const secret = await getSecret();
   if (!secret) return;
 
   const role = await getRole();
-  const tabId = sender.tab?.id ?? 0;
-  const event = message.event; // 'VOICE_INPUT_STARTED' | 'VOICE_INPUT_ENDED'
-
-  if (event === 'VOICE_INPUT_STARTED') {
-    currentVoiceSessionId = `voice-${Date.now()}-${++voiceSessionCounter}`;
-  }
-  const sessionId = currentVoiceSessionId || `voice-${Date.now()}`;
-  if (event === 'VOICE_INPUT_ENDED') {
-    currentVoiceSessionId = null;
-  }
 
   try {
     await fetch(`${SERVICE_URL}/voice/lifecycle`, {
@@ -852,11 +905,24 @@ export async function handleVoiceLifecycleMessage(message: any, sender: chrome.r
   }
 }
 
-export async function handleMediaOverrideMessage(sender: chrome.runtime.MessageSender): Promise<void> {
+export async function handleMediaOverrideMessage(
+  message: any,
+  sender: chrome.runtime.MessageSender
+): Promise<void> {
   const secret = await getSecret();
   if (!secret) return;
   const role = await getRole();
   const tabId = sender.tab?.id ?? 0;
+  const evidence = message?.evidence;
+  if (
+    !evidence ||
+    typeof evidence.leaseId !== 'string' ||
+    typeof evidence.pauseCommandId !== 'string' ||
+    typeof evidence.documentGeneration !== 'string' ||
+    typeof evidence.mediaTargetId !== 'string'
+  ) {
+    return;
+  }
 
   try {
     await fetch(`${SERVICE_URL}/media/override`, {
@@ -867,7 +933,12 @@ export async function handleMediaOverrideMessage(sender: chrome.runtime.MessageS
       },
       body: JSON.stringify({
         browserInstanceId: role.browserInstanceId,
+        connectionGeneration: role.connectionGeneration,
         tabId,
+        leaseId: evidence.leaseId,
+        pauseCommandId: evidence.pauseCommandId,
+        documentGeneration: evidence.documentGeneration,
+        mediaTargetId: evidence.mediaTargetId,
       }),
     });
   } catch (e) {
@@ -876,6 +947,142 @@ export async function handleMediaOverrideMessage(sender: chrome.runtime.MessageS
 }
 
 let isPollingMediaCommands = false;
+
+function getCommandTab(tabId: number): Promise<chrome.tabs.Tab | null> {
+  return new Promise((resolve) => {
+    try {
+      chrome.tabs.get(tabId, (tab) => {
+        const error = chrome.runtime.lastError;
+        if (error) void error.message;
+        resolve(error || !tab ? null : tab);
+      });
+    } catch (_error) {
+      resolve(null);
+    }
+  });
+}
+
+function sendMediaCommandToTab(
+  command: ServiceMediaCommand
+): Promise<MediaCommandResultPayload> {
+  const stale = (): MediaCommandResultPayload => ({
+    commandId: command.commandId,
+    action: command.action,
+    outcome: 'STALE_TARGET',
+    initialPlayback: 'unknown',
+    finalPlayback: 'unknown',
+  });
+
+  return new Promise((resolve) => {
+    try {
+      chrome.tabs.sendMessage(
+        command.tabId,
+        {
+          action: 'EXECUTE_MEDIA_COMMAND',
+          commandId: command.commandId,
+          leaseId: command.leaseId,
+          command: command.action,
+          expectedDocumentGeneration: command.expectedDocumentGeneration,
+          expectedMediaTargetId: command.expectedMediaTargetId,
+        },
+        (response: MediaCommandResultPayload | undefined) => {
+          const error = chrome.runtime.lastError;
+          if (error) {
+            void error.message;
+            resolve(stale());
+            return;
+          }
+          const validOutcomes = [
+            'CHANGED',
+            'ALREADY_IN_STATE',
+            'NOT_FOUND',
+            'FAILED',
+            'STALE_TARGET',
+          ];
+          if (
+            !response ||
+            response.commandId !== command.commandId ||
+            response.action !== command.action ||
+            !validOutcomes.includes(response.outcome)
+          ) {
+            resolve({
+              commandId: command.commandId,
+              action: command.action,
+              outcome: 'FAILED',
+              initialPlayback: 'unknown',
+              finalPlayback: 'unknown',
+            });
+            return;
+          }
+          resolve(response);
+        }
+      );
+    } catch (_error) {
+      resolve(stale());
+    }
+  });
+}
+
+async function postMediaCommandAcknowledgement(
+  secret: string,
+  role: BrowserRole,
+  command: ServiceMediaCommand,
+  result: MediaCommandResultPayload
+): Promise<void> {
+  try {
+    await fetch(`${SERVICE_URL}/media/commands/ack`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Bridge-Secret': secret,
+      },
+      body: JSON.stringify({
+        ...result,
+        browserInstanceId: role.browserInstanceId,
+        connectionGeneration: role.connectionGeneration,
+        tabId: command.tabId,
+      }),
+    });
+  } catch (_error) {
+    // Lost acknowledgement fails closed: the service cannot acquire resume authority.
+  }
+}
+
+async function executeAndAcknowledgeMediaCommand(
+  command: ServiceMediaCommand,
+  role: BrowserRole,
+  secret: string
+): Promise<void> {
+  let result: MediaCommandResultPayload;
+  const stale = (): MediaCommandResultPayload => ({
+    commandId: command.commandId,
+    action: command.action,
+    outcome: 'STALE_TARGET',
+    initialPlayback: 'unknown',
+    finalPlayback: 'unknown',
+  });
+
+  if (
+    command.browserInstanceId !== role.browserInstanceId ||
+    command.connectionGeneration !== role.connectionGeneration ||
+    command.expiresAt < Date.now()
+  ) {
+    result = stale();
+  } else {
+    const tab = await getCommandTab(command.tabId);
+    if (
+      !tab ||
+      tab.windowId !== command.windowId ||
+      (tab.url || '') !== command.mediaUrl
+    ) {
+      result = stale();
+    } else {
+      result = await sendMediaCommandToTab(command);
+    }
+  }
+
+  await postMediaCommandAcknowledgement(secret, role, command, result);
+}
 
 export async function pollMediaCommands(): Promise<void> {
   if (typeof chrome === 'undefined' || !chrome.tabs) return;
@@ -907,21 +1114,13 @@ export async function pollMediaCommands(): Promise<void> {
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data?.commands)) {
-        for (const cmd of data.commands) {
-          if (cmd.tabId && (cmd.action === 'PAUSE' || cmd.action === 'RESUME')) {
-            chrome.tabs.sendMessage(
-              cmd.tabId,
-              {
-                action: 'EXECUTE_MEDIA_COMMAND',
-                command: cmd.action,
-              },
-              () => {
-                const err = chrome.runtime.lastError;
-                if (err) {
-                  void err.message;
-                }
-              }
-            );
+        for (const command of data.commands as ServiceMediaCommand[]) {
+          if (
+            command.tabId &&
+            command.commandId &&
+            (command.action === 'PAUSE' || command.action === 'RESUME')
+          ) {
+            await executeAndAcknowledgeMediaCommand(command, role, secret);
           }
         }
       }
@@ -972,12 +1171,12 @@ if (typeof chrome !== 'undefined') {
       }
 
       if (message && message.action === 'VOICE_LIFECYCLE' && sender && (sender as chrome.runtime.MessageSender).tab) {
-        void handleVoiceLifecycleMessage(message, sender as chrome.runtime.MessageSender);
+        queueVoiceLifecycleMessage(message, sender as chrome.runtime.MessageSender);
         return undefined;
       }
 
       if (message && message.action === 'MEDIA_PLAYBACK_OVERRIDDEN' && sender && (sender as chrome.runtime.MessageSender).tab) {
-        void handleMediaOverrideMessage(sender as chrome.runtime.MessageSender);
+        void handleMediaOverrideMessage(message, sender as chrome.runtime.MessageSender);
         return undefined;
       }
 
