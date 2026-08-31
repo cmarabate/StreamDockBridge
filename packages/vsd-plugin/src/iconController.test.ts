@@ -302,7 +302,7 @@ describe('generation ownership', () => {
     let release: (() => void) | null = null;
 
     const controller = new IconController({
-      request: async (template) => {
+      request: async (_template) => {
         if (failNext) {
           failNext = false;
           await new Promise<void>((resolve) => {

@@ -13,6 +13,7 @@ export const ROUTE_MAP: ActionMap = {
 
 export const TRANSCRIBE_ACTION_UUID = 'com.cmarabate.streamdock.streamdockbridge.transcribe';
 export const CONTEXT_URL_ACTION_UUID = 'com.cmarabate.streamdock.streamdockbridge.contexturl';
+export const LOCAL_PROJECT_ACTION_UUID = 'com.cmarabate.streamdock.streamdockbridge.localproject';
 
 export const BRIDGE_ORIGIN = 'http://127.0.0.1:17337';
 
@@ -44,6 +45,16 @@ export interface ContextUrlResponse {
   resolvedUrl?: string;
 }
 
+export interface LocalProjectResponse {
+  statusCode: number;
+  success: boolean;
+  action?: string;
+  targetPath?: string;
+  error?: string;
+}
+
+export type LocalProjectRequester = (action: string) => Promise<LocalProjectResponse>;
+
 /**
  * Sends the template and which context channel it reads; every value
  * substituted into it still comes from the service.
@@ -64,6 +75,9 @@ export interface ActionSettings {
    * between channels at run time.
    */
   contextMode?: unknown;
+  /** Selected local project action: OPEN_PROJECT_TERMINAL, etc. */
+  action?: unknown;
+  localAction?: unknown;
 }
 
 export interface KeyDownResult {
@@ -300,6 +314,43 @@ export const defaultSiteIconRequester: SiteIconRequester = async (template, refr
   }
 };
 
+export const defaultLocalProjectRequester: LocalProjectRequester = async (action: string) => {
+  const attempt = async (secret: string) =>
+    postJson('/actions/local', { 'X-Bridge-Secret': secret }, JSON.stringify({ action }));
+
+  let secret = await getSecret();
+  if (!secret) return { statusCode: 401, success: false, error: 'unauthorized' };
+
+  let res = await attempt(secret);
+  if (res.statusCode === 401) {
+    secret = await getSecret(true);
+    if (!secret) return { statusCode: 401, success: false, error: 'unauthorized' };
+    res = await attempt(secret);
+  }
+
+  if (res.statusCode !== 200) {
+    try {
+      const parsed = JSON.parse(res.body);
+      return { statusCode: res.statusCode, success: false, error: parsed?.error || 'failed' };
+    } catch (e) {
+      return { statusCode: res.statusCode, success: false, error: 'failed' };
+    }
+  }
+
+  try {
+    const parsed = JSON.parse(res.body);
+    return {
+      statusCode: res.statusCode,
+      success: parsed?.success === true,
+      action: parsed?.action,
+      targetPath: parsed?.targetPath,
+      error: parsed?.error,
+    };
+  } catch (e) {
+    return { statusCode: res.statusCode, success: false, error: 'invalid_response' };
+  }
+};
+
 export async function handlePluginKeyDown(
   context: string,
   actionUuid: string,
@@ -307,8 +358,22 @@ export async function handlePluginKeyDown(
   sendAlert?: (context: string) => void,
   transcribeRequester: TranscribeRequester = defaultTranscribeRequester,
   settings: ActionSettings | undefined = undefined,
-  contextUrlRequester: ContextUrlRequester = defaultContextUrlRequester
+  contextUrlRequester: ContextUrlRequester = defaultContextUrlRequester,
+  localProjectRequester: LocalProjectRequester = defaultLocalProjectRequester
 ): Promise<KeyDownResult> {
+  if (actionUuid === LOCAL_PROJECT_ACTION_UUID || actionUuid.endsWith('.localproject')) {
+    const action =
+      (settings && typeof settings.action === 'string' && settings.action) ||
+      (settings && typeof settings.localAction === 'string' && settings.localAction) ||
+      'OPEN_PROJECT_TERMINAL';
+
+    const result = await localProjectRequester(action);
+    if (!result.success && sendAlert) {
+      sendAlert(context);
+    }
+    return { route: 'localproject', success: result.success };
+  }
+
   if (actionUuid === CONTEXT_URL_ACTION_UUID || actionUuid.endsWith('.contexturl')) {
     /**
      * The key owns only the template. Everything substituted into it is read

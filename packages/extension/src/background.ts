@@ -803,6 +803,117 @@ try {
   // Global scope may be locked down in some environments; safe to ignore.
 }
 
+let voiceSessionCounter = 0;
+let currentVoiceSessionId: string | null = null;
+
+export async function handleVoiceLifecycleMessage(message: any, sender: chrome.runtime.MessageSender): Promise<void> {
+  const secret = await getSecret();
+  if (!secret) return;
+
+  const role = await getRole();
+  const tabId = sender.tab?.id ?? 0;
+  const event = message.event; // 'VOICE_INPUT_STARTED' | 'VOICE_INPUT_ENDED'
+
+  if (event === 'VOICE_INPUT_STARTED') {
+    currentVoiceSessionId = `voice-${Date.now()}-${++voiceSessionCounter}`;
+  }
+  const sessionId = currentVoiceSessionId || `voice-${Date.now()}`;
+  if (event === 'VOICE_INPUT_ENDED') {
+    currentVoiceSessionId = null;
+  }
+
+  try {
+    await fetch(`${SERVICE_URL}/voice/lifecycle`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Bridge-Secret': secret,
+      },
+      body: JSON.stringify({
+        event,
+        source: {
+          browserInstanceId: role.browserInstanceId,
+          browserFamily: role.browserFamily,
+          displayName: role.displayName,
+          mode: role.mode,
+          connectionGeneration: role.connectionGeneration,
+        },
+        tabId,
+        sessionId,
+        provider: 'chatgpt',
+      }),
+    });
+  } catch (e) {
+    // Graceful network failure fallback
+  }
+}
+
+export async function handleMediaOverrideMessage(sender: chrome.runtime.MessageSender): Promise<void> {
+  const secret = await getSecret();
+  if (!secret) return;
+  const role = await getRole();
+  const tabId = sender.tab?.id ?? 0;
+
+  try {
+    await fetch(`${SERVICE_URL}/media/override`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Bridge-Secret': secret,
+      },
+      body: JSON.stringify({
+        browserInstanceId: role.browserInstanceId,
+        tabId,
+      }),
+    });
+  } catch (e) {
+    void e;
+  }
+}
+
+export async function pollMediaCommands(): Promise<void> {
+  if (typeof chrome === 'undefined' || !chrome.tabs) return;
+
+  try {
+    const role = await getRole();
+    if (!channelsFor(role.mode).includes('media')) return;
+
+    const secret = await getSecret();
+    if (!secret) return;
+
+    const res = await fetch(
+      `${SERVICE_URL}/media/commands?browserInstanceId=${encodeURIComponent(role.browserInstanceId)}`,
+      {
+        headers: { 'X-Bridge-Secret': secret },
+      }
+    );
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data?.commands)) {
+        for (const cmd of data.commands) {
+          if (cmd.tabId && (cmd.action === 'PAUSE' || cmd.action === 'RESUME')) {
+            chrome.tabs.sendMessage(
+              cmd.tabId,
+              {
+                action: 'EXECUTE_MEDIA_COMMAND',
+                command: cmd.action,
+              },
+              () => {
+                const err = chrome.runtime.lastError;
+                if (err) {
+                  void err.message;
+                }
+              }
+            );
+          }
+        }
+      }
+    }
+  } catch (e) {
+    void e;
+  }
+}
+
 // Synchronous top-level MV3 event listener registrations
 if (typeof chrome !== 'undefined') {
   if (chrome.runtime) {
@@ -827,19 +938,25 @@ if (typeof chrome !== 'undefined') {
 
   if (chrome.runtime) {
     /**
-     * The settings page changed the mode or the name.
-     *
-     * `sender.tab` is set for a content script and absent for an extension page,
-     * so requiring its absence means only our own options page can change this
-     * browser's role. A page's script cannot reach context authority here, which
-     * is the property this worker has always held.
+     * Handle internal messages from extension pages and content scripts.
      */
     chrome.runtime.onMessage?.addListener((message, sender) => {
-      if (sender && (sender as chrome.runtime.MessageSender).tab) return undefined;
-      if (message && message.action === 'ROLE_CHANGED') {
+      if (message && message.action === 'ROLE_CHANGED' && (!sender || !(sender as chrome.runtime.MessageSender).tab)) {
         invalidateRole();
         void republishAll();
+        return undefined;
       }
+
+      if (message && message.action === 'VOICE_LIFECYCLE' && sender && (sender as chrome.runtime.MessageSender).tab) {
+        void handleVoiceLifecycleMessage(message, sender as chrome.runtime.MessageSender);
+        return undefined;
+      }
+
+      if (message && message.action === 'MEDIA_PLAYBACK_OVERRIDDEN' && sender && (sender as chrome.runtime.MessageSender).tab) {
+        void handleMediaOverrideMessage(sender as chrome.runtime.MessageSender);
+        return undefined;
+      }
+
       return undefined;
     });
 
@@ -894,9 +1011,16 @@ if (typeof chrome !== 'undefined') {
       if (alarm.name === 'service_recovery_alarm') {
         recoveryTick();
         heartbeatTick();
+        void pollMediaCommands();
       }
     });
   }
+}
+
+if (typeof setInterval !== 'undefined' && (typeof process === 'undefined' || !process.env.JEST_WORKER_ID)) {
+  setInterval(() => {
+    void pollMediaCommands();
+  }, 500);
 }
 
 // Immediate synchronous top-level execution

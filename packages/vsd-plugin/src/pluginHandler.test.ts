@@ -1,4 +1,4 @@
-﻿import { handlePluginKeyDown, resolveLookupRoute, HttpRequester, TranscribeRequester } from './pluginHandler';
+import { handlePluginKeyDown, resolveLookupRoute, HttpRequester, TranscribeRequester } from './pluginHandler';
 
 describe('VSD Plugin Transport Handler', () => {
   it('triggers POST for IMDb action', async () => {
@@ -290,5 +290,74 @@ describe('Context URL action', () => {
     );
     expect(routes).toEqual(['imdb']);
     expect(res.route).toBe('imdb');
+  });
+});
+
+describe('Local Project Action', () => {
+  const LOCAL_PROJECT = 'com.cmarabate.streamdock.streamdockbridge.localproject';
+
+  it('dispatches the configured local action to the localProject requester', async () => {
+    const executed: string[] = [];
+    const mockRequester = async (action: string) => {
+      executed.push(action);
+      return { statusCode: 200, success: true, action, targetPath: 'D:\\_Dev\\Apps\\adhdeploy' };
+    };
+
+    const res = await handlePluginKeyDown(
+      'ctx-local',
+      LOCAL_PROJECT,
+      undefined,
+      undefined,
+      undefined,
+      { action: 'OPEN_PROJECT_TERMINAL' },
+      undefined,
+      mockRequester
+    );
+
+    expect(executed).toEqual(['OPEN_PROJECT_TERMINAL']);
+    expect(res).toEqual({ route: 'localproject', success: true });
+  });
+
+  it('defaults to OPEN_PROJECT_TERMINAL when no settings configured', async () => {
+    const executed: string[] = [];
+    const mockRequester = async (action: string) => {
+      executed.push(action);
+      return { statusCode: 200, success: true, action };
+    };
+
+    const res = await handlePluginKeyDown(
+      'ctx-default',
+      LOCAL_PROJECT,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      mockRequester
+    );
+
+    expect(executed).toEqual(['OPEN_PROJECT_TERMINAL']);
+    expect(res.success).toBe(true);
+  });
+
+  it('alerts when the service refuses the action (e.g. no project context)', async () => {
+    const alerted: string[] = [];
+    const mockRequester = async (_action: string) => {
+      return { statusCode: 400, success: false, error: 'no_project_context' };
+    };
+
+    const res = await handlePluginKeyDown(
+      'ctx-fail',
+      LOCAL_PROJECT,
+      undefined,
+      (c) => alerted.push(c),
+      undefined,
+      { action: 'OPEN_PROJECT_FOLDER' },
+      undefined,
+      mockRequester
+    );
+
+    expect(res.success).toBe(false);
+    expect(alerted).toEqual(['ctx-fail']);
   });
 });

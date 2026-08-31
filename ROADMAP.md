@@ -921,10 +921,30 @@ StreamDockBridge reads the registry read-only and maps extracted page evidence v
 - Windows Terminal (`wt.exe`) installed at `%LOCALAPPDATA%\Microsoft\WindowsApps\wt.exe`.
 - Supports native OSC 133 semantic marks (`133;A` prompt start, `133;B` command start, `133;C` output start, `133;D` exit code) and `copyLastOutput` action.
 - Native clipboard copy of last command output requires terminal pane focus.
+- **Status: `VERIFIED NATIVE TERMINAL CAPABILITY / NOT EXPOSED AS BACKGROUND STREAMDOCK ACTION`**.
 
 **8. WatchDirector Archaeology:**
 - Located read-only at `D:\_Dev\Apps\watchdirector` (Node.js 22.6 + SQLite ledger).
 - Splitting responsibility: StreamDockBridge owns raw playback observation, browser tab arbitration, and Deck routing; WatchDirector owns personal media catalog, watch history, and recommendations. No WatchDirector mutation performed.
+
+**Status: `VERIFIED AUTOMATED` + `VERIFIED RUNTIME`.**
+
+### Cross-Browser Voice Input → Media Auto-Pause & Pause Lease State Machine — `DONE` / `VERIFIED AUTOMATED` + `VERIFIED RUNTIME`
+
+**The goal:** When the owner begins ChatGPT voice dictation in Chrome (`WORK_BROWSER`), if the active Brave `MEDIA_BROWSER` is currently playing, StreamDockBridge automatically pauses Brave playback. When that same voice session ends, StreamDockBridge resumes the media session — unless the user has overridden playback or switched context.
+
+**1. Producer/Consumer Cross-Browser Architecture:**
+- **Voice Lifecycle Producer**: Chrome (`WORK_BROWSER`) runs `ChatGPTVoiceObserver` mounted on `#prompt-textarea.closest('form')`. Detects active recording state via speech button / waveform DOM attributes.
+- **Privacy Guarantee**: Zero audio recording, zero microphone stream interception, zero text/transcript character inspection. Emits discrete `VOICE_INPUT_STARTED` / `VOICE_INPUT_ENDED` events.
+- **Media Controller Consumer**: Brave (`MEDIA_BROWSER`) runs `MediaPlaybackController` inside streaming tabs. Discovers active playing `<video>` across DOM/Shadow DOM using composite scoring (`!paused`, `currentTime > 0`, `readyState >= 2`, visible area, audible volume). Executes `PAUSE` and `RESUME` commands.
+
+**2. Pause Lease Engine & State Machine (`VoiceCoordinator`):**
+- **Explicit Pause Lease**: Instead of naive Start-Pause/End-Play pairing, the coordinator mints an explicit `PauseLease` on `VOICE_INPUT_STARTED` tracking `leaseId`, `voiceSessionId`, `mediaBrowserInstanceId`, `mediaTabId`, `mediaTitle`, and `expiresAt` (5-minute TTL).
+- **Pre-Paused Media Protection**: If media was already paused before dictation started, `didPause = false` and the service will **never** resume playback when dictation ends.
+- **Manual User Override Invalidation**: If the user clicks Play on the media player during dictation, the content script detects the `play` event outside the 350ms programmatic suppression window and emits `POST /media/override`, marking `overridden = true` and canceling resume authority.
+- **Context Drift Protection**: If the media owner switches, or the media tab navigates or closes during dictation, the lease is invalidated and no resume command is sent.
+- **Observability**: `GET /voice/status` returns live read-only state of the active voice session and media pause lease.
+- **Configuration**: "Pause media while dictating" option exposed in extension settings.
 
 **Status: `VERIFIED AUTOMATED` + `VERIFIED RUNTIME`.**
 

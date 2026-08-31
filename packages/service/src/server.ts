@@ -28,8 +28,10 @@ import {
   LocalProjectAction,
   LOCAL_PROJECT_ACTIONS,
 } from './localActions';
+import { VoiceCoordinator } from './voiceCoordinator';
 
 export const projectRegistry = new ProjectRegistryService();
+export const voiceCoordinator = new VoiceCoordinator(contextChannels);
 
 /**
  * Which channel a Context URL key reads.
@@ -798,6 +800,138 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
           }
 
           sendJson(200, result);
+        } catch (e) {
+          sendJson(400, { success: false, error: 'invalid_json' });
+        }
+      });
+      return;
+    }
+
+    /**
+     * Voice session lifecycle producer endpoint (e.g. from Chrome WORK_BROWSER).
+     * Strictly gated by secret. No audio or transcript text is ever accepted.
+     */
+    if (req.method === 'POST' && pathname === '/voice/lifecycle') {
+      if (!isAllowedOrigin(origin, allowAnyExtension)) {
+        sendJson(403, { success: false, error: 'origin_forbidden' });
+        return;
+      }
+
+      const clientSecret = req.headers['x-bridge-secret'];
+      if (!secretStore.verifySecret(clientSecret as string | undefined)) {
+        sendJson(401, { success: false, error: 'unauthorized' });
+        return;
+      }
+
+      let body = '';
+      req.on('data', (chunk) => {
+        body += chunk;
+      });
+
+      req.on('end', () => {
+        try {
+          const payload = JSON.parse(body);
+          const { event, source, tabId, sessionId, provider } = payload;
+
+          if (!event || !['VOICE_INPUT_STARTED', 'VOICE_INPUT_ENDED'].includes(event)) {
+            sendJson(400, { success: false, error: 'invalid_voice_event' });
+            return;
+          }
+
+          if (!source || !source.browserInstanceId || typeof tabId !== 'number' || !sessionId) {
+            sendJson(400, { success: false, error: 'invalid_voice_payload' });
+            return;
+          }
+
+          const result = voiceCoordinator.handleVoiceLifecycle(
+            event,
+            source,
+            tabId,
+            sessionId,
+            provider || 'chatgpt'
+          );
+
+          sendJson(200, result);
+        } catch (e) {
+          sendJson(400, { success: false, error: 'invalid_json' });
+        }
+      });
+      return;
+    }
+
+    /**
+     * Read-only observability for active voice session and media pause lease.
+     */
+    if (req.method === 'GET' && pathname === '/voice/status') {
+      if (!isAllowedOrigin(origin, allowAnyExtension)) {
+        sendJson(403, { success: false, error: 'origin_forbidden' });
+        return;
+      }
+
+      const clientSecret = req.headers['x-bridge-secret'];
+      if (!secretStore.verifySecret(clientSecret as string | undefined)) {
+        sendJson(401, { success: false, error: 'unauthorized' });
+        return;
+      }
+
+      sendJson(200, { success: true, ...voiceCoordinator.getStatus() });
+      return;
+    }
+
+    /**
+     * Pending media commands for a browser instance (e.g. Brave MEDIA_BROWSER).
+     */
+    if (req.method === 'GET' && pathname === '/media/commands') {
+      if (!isAllowedOrigin(origin, allowAnyExtension)) {
+        sendJson(403, { success: false, error: 'origin_forbidden' });
+        return;
+      }
+
+      const clientSecret = req.headers['x-bridge-secret'];
+      if (!secretStore.verifySecret(clientSecret as string | undefined)) {
+        sendJson(401, { success: false, error: 'unauthorized' });
+        return;
+      }
+
+      const browserInstanceId = parsed.query?.browserInstanceId as string | undefined;
+      if (!browserInstanceId) {
+        sendJson(400, { success: false, error: 'missing_browser_instance_id' });
+        return;
+      }
+
+      const commands = voiceCoordinator.getPendingCommands(browserInstanceId);
+      sendJson(200, { success: true, commands });
+      return;
+    }
+
+    /**
+     * Content script reports that the user manually clicked Play during a pause lease.
+     */
+    if (req.method === 'POST' && pathname === '/media/override') {
+      if (!isAllowedOrigin(origin, allowAnyExtension)) {
+        sendJson(403, { success: false, error: 'origin_forbidden' });
+        return;
+      }
+
+      const clientSecret = req.headers['x-bridge-secret'];
+      if (!secretStore.verifySecret(clientSecret as string | undefined)) {
+        sendJson(401, { success: false, error: 'unauthorized' });
+        return;
+      }
+
+      let body = '';
+      req.on('data', (chunk) => {
+        body += chunk;
+      });
+
+      req.on('end', () => {
+        try {
+          const payload = JSON.parse(body);
+          const { browserInstanceId, tabId } = payload;
+          if (browserInstanceId && typeof tabId === 'number') {
+            voiceCoordinator.handleUserOverride(browserInstanceId, tabId);
+          }
+          sendJson(200, { success: true });
         } catch (e) {
           sendJson(400, { success: false, error: 'invalid_json' });
         }

@@ -1,4 +1,4 @@
-﻿import WebSocket from 'ws';
+import WebSocket from 'ws';
 import * as fs from 'fs';
 import * as path from 'path';
 import { handlePluginKeyDown } from './pluginHandler';
@@ -234,6 +234,10 @@ async function handleMessage(msgStr: string) {
       );
 
       // handlePluginKeyDown already alerts on failure; success feedback is ours.
+      if (result.route === 'localproject' && result.success) {
+        showOk(context);
+      }
+
       if (result.route === 'contexturl' && result.success) {
         // The browser navigating is the visible outcome; keep feedback minimal.
         showOk(context);

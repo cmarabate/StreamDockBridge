@@ -76,6 +76,19 @@
       "SupportedInMultiActions": true,
       "Tooltip": "Open a URL template filled in from the current browser page",
       "UUID": "com.cmarabate.streamdock.streamdockbridge.contexturl"
+    },
+    {
+      "Icon": "images/icon",
+      "Name": "Local Project Action",
+      "PropertyInspectorPath": "propertyInspector/localProject.html",
+      "States": [
+        {
+          "Image": "images/icon"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Execute a closed action on the currently active project (Terminal, Files, VS Code, Copy Path)",
+      "UUID": "com.cmarabate.streamdock.streamdockbridge.localproject"
     }
   ],
   "Author": "cmarabate",
