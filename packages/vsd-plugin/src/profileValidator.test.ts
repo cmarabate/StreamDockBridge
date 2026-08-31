@@ -107,6 +107,16 @@ function validateProfileDirectory(profileDir: string) {
     expect(actions[slot]?.Settings?.autoWebsiteIcon).toBe(false);
   }
 
+  /**
+   * Each website key states the channel it reads. A media key that fell back to
+   * whatever the work browser was showing is what made ReelGood search a
+   * Supabase admin page while Regular Show was playing, so the intent is
+   * persisted rather than left to a default.
+   */
+  for (const slot of ['2,1', '3,1', '4,1', '0,2']) {
+    expect(actions[slot]?.Settings?.contextMode).toBe('media');
+  }
+
   /** The specialized keys are untouched: none of them is a URL. */
   expect(actions['1,2']?.UUID).toBe('com.cmarabate.streamdock.streamdockbridge.transcribe');
   expect(actions['1,2']?.UUID).toBe('com.cmarabate.streamdock.streamdockbridge.transcribe');

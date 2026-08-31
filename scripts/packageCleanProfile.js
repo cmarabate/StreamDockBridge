@@ -115,7 +115,8 @@ const childManifest = {
       Name: 'IMDb',
       Settings: {
         urlTemplate: 'https://www.imdb.com/find?q={title}',
-        autoWebsiteIcon: false
+        autoWebsiteIcon: false,
+        contextMode: 'media'
       },
       State: 0,
       States: [
@@ -134,7 +135,8 @@ const childManifest = {
       Name: 'CAST',
       Settings: {
         urlTemplate: 'https://www.google.com/search?q={title}%20cast',
-        autoWebsiteIcon: false
+        autoWebsiteIcon: false,
+        contextMode: 'media'
       },
       State: 0,
       States: [
@@ -153,7 +155,8 @@ const childManifest = {
       Name: 'JUSTWATCH',
       Settings: {
         urlTemplate: 'https://www.justwatch.com/us/search?q={title}',
-        autoWebsiteIcon: false
+        autoWebsiteIcon: false,
+        contextMode: 'media'
       },
       State: 0,
       States: [
@@ -172,7 +175,8 @@ const childManifest = {
       Name: 'REDDIT',
       Settings: {
         urlTemplate: 'https://www.reddit.com/search/?q={title}',
-        autoWebsiteIcon: false
+        autoWebsiteIcon: false,
+        contextMode: 'media'
       },
       State: 0,
       States: [

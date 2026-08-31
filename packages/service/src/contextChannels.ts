@@ -50,6 +50,18 @@ export function mayPublish(mode: BrowserMode, channel: ContextChannel): boolean 
 }
 
 /**
+ * Whether this mode exists specifically to serve this channel.
+ *
+ * HYBRID publishes everything but is dedicated to nothing, so it yields to a
+ * browser the owner has actually assigned the job.
+ */
+export function isDedicatedTo(mode: BrowserMode, channel: ContextChannel): boolean {
+  if (mode === 'MEDIA_BROWSER') return channel === 'media';
+  if (mode === 'WORK_BROWSER') return channel === 'page' || channel === 'project';
+  return false;
+}
+
+/**
  * A browser installation.
  *
  * `browserInstanceId` is ROUTING identity, not authentication — it says which
@@ -233,7 +245,21 @@ export class ContextChannelStore {
     // An owner that has gone quiet has forfeited the channel.
     if (!owner || !owner.connected || now - owner.lastSeen > SOURCE_TTL_MS) return true;
 
-    // Otherwise the more recent user activity wins…
+    /**
+     * A browser configured FOR this channel outranks one that merely also does
+     * it.
+     *
+     * The owner runs Brave as a dedicated media browser and Chrome for work. If
+     * Chrome is left on the default HYBRID it competes for media, and with pure
+     * recency it wins whenever it happens to be on a page with a video — so a
+     * media key reads Chrome instead of Brave. Saying what a browser is for
+     * should settle that, rather than whichever tab was touched last.
+     */
+    const challengerDedicated = isDedicatedTo(observation.source.mode, observation.channel);
+    const ownerDedicated = isDedicatedTo(owner.mode, observation.channel);
+    if (challengerDedicated !== ownerDedicated) return challengerDedicated;
+
+    // Between equals, the more recent user activity wins…
     if (observation.observedAt > current.observedAt) return true;
     if (observation.observedAt < current.observedAt) return false;
 

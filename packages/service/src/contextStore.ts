@@ -38,16 +38,20 @@ export const LEGACY_SOURCE: SourceIdentity = {
 let legacySequence = 0;
 
 /**
- * The historical single-context surface, now a thin view over the channels.
+ * The historical single-context surface, now a thin view over the MEDIA channel.
  *
- * Everything that used to read "the current context" still can. What it
- * actually reads is the MEDIA channel, falling back to PAGE — so a machine
- * running only a work browser is not left with nothing, while a Brave/Chrome
- * split resolves media lookups against Brave as intended.
+ * It used to fall back to PAGE when media was empty, and that was a real defect
+ * rather than a convenience: with Brave publishing media and Chrome publishing
+ * pages, a media key pressed while Brave had nothing would search whatever
+ * Chrome happened to be showing. The owner saw exactly that — a ReelGood search
+ * for a Supabase admin page while Regular Show was playing.
+ *
+ * Absence of media is now absence, not an invitation to use something else.
+ * Every caller that wants the page must ask for the page by name.
  */
 export class ContextStore {
   private compat(now = Date.now()): ContextRecord | null {
-    return contextChannels.getRecord('media', now) ?? contextChannels.getRecord('page', now);
+    return contextChannels.getRecord('media', now);
   }
 
   public updateContext(record: ContextRecord): boolean {

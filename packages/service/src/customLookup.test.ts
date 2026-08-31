@@ -143,10 +143,15 @@ describe('POST /lookup/custom', () => {
     expect(res.data.resolvedUrl).not.toContain('evil.example');
   });
 
-  it('refuses when there is no browser context', async () => {
+  /**
+   * The error names the channel the key needed. A media key with no media
+   * must say so rather than reporting a vague failure — and must never reach
+   * for another channel that happens to have something in it.
+   */
+  it('refuses when there is no media context, naming the channel', async () => {
     const res = await custom('https://example.com/?q={title}');
     expect(res.statusCode).toBe(400);
-    expect(res.data.error).toBe('no_usable_context');
+    expect(res.data.error).toBe('no_media_context');
     expect(launched).toEqual([]);
   });
 

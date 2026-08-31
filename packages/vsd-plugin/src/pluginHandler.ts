@@ -44,14 +44,26 @@ export interface ContextUrlResponse {
   resolvedUrl?: string;
 }
 
-/** Sends only the template; every value substituted into it comes from the service. */
-export type ContextUrlRequester = (template: string) => Promise<ContextUrlResponse>;
+/**
+ * Sends the template and which context channel it reads; every value
+ * substituted into it still comes from the service.
+ */
+export type ContextUrlRequester = (
+  template: string,
+  contextMode?: string
+) => Promise<ContextUrlResponse>;
 
 /** The per-key configuration the host hands us at keyDown and willAppear. */
 export interface ActionSettings {
   urlTemplate?: unknown;
   /** Absent means ON: the feature is opt-out, so old keys inherit it. */
   autoWebsiteIcon?: unknown;
+  /**
+   * Which context channel this key reads: media, page, project, or auto.
+   * Absent means auto, which infers from the template rather than falling back
+   * between channels at run time.
+   */
+  contextMode?: unknown;
 }
 
 export interface KeyDownResult {
@@ -208,9 +220,16 @@ export const defaultTranscribeRequester: TranscribeRequester = async () => {
   }
 };
 
-export const defaultContextUrlRequester: ContextUrlRequester = async (template: string) => {
+export const defaultContextUrlRequester: ContextUrlRequester = async (
+  template: string,
+  contextMode?: string
+) => {
   const attempt = async (secret: string) =>
-    postJson('/lookup/custom', { 'X-Bridge-Secret': secret }, JSON.stringify({ template }));
+    postJson(
+      '/lookup/custom',
+      { 'X-Bridge-Secret': secret },
+      JSON.stringify(contextMode ? { template, contextMode } : { template })
+    );
 
   let secret = await getSecret();
   if (!secret) return { statusCode: 401, success: false };
@@ -302,7 +321,10 @@ export async function handlePluginKeyDown(
       return { route: 'contexturl', success: false };
     }
 
-    const result = await contextUrlRequester(template);
+    const contextMode =
+      settings && typeof settings.contextMode === 'string' ? settings.contextMode : undefined;
+
+    const result = await contextUrlRequester(template, contextMode);
     if (!result.success && sendAlert) {
       sendAlert(context);
     }

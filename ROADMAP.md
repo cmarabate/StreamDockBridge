@@ -757,8 +757,72 @@ the server clock.
 **Proven against the running service** with two simulated installations: Brave media and
 Chrome page coexisting; `mode_forbids_channel` refusing Chrome's media claim and Brave's
 page claim; a media key resolving `Brickleberry` while Chrome published eight page updates;
-and Brave's disconnect releasing only media. **Not yet proven with the two real browsers**
-— that needs the extension installed in both, and is outstanding.
+and Brave's disconnect releasing only media.
+
+#### FAILED PHYSICAL, 2026-08-30 — media key consumed the work browser's page
+
+The owner ran the real two-browser test. Regular Show was playing in Brave; Chrome was in
+front showing *"Emails | Authentication | Chrisyphus Ecosystem | cmarabate | Supabase"*.
+Pressing the ReelGood key **searched the Supabase page title**.
+
+Live state captured before any repair:
+
+| | |
+| --- | --- |
+| Brave `76faa101…` | `MEDIA_BROWSER`, gen 4, connected 57 s ago |
+| Chrome `7b9c4683…` | **`HYBRID`**, gen 2, connected |
+| `media` | **NULL** |
+| `page` | owned by Chrome |
+| legacy `/context` | returned the Chrome page |
+
+**Two independent defects**, both mine:
+
+1. **Consumer — the visible failure.** Every Context URL key on the profile had no
+   persisted `contextMode`, so all resolved as `auto`, and `auto` meant *media, then fall
+   back to page*. With media empty it read Chrome's page. Backward compatibility had been
+   implemented as a runtime fallback, which is exactly the cross-channel leak the channel
+   model exists to prevent.
+2. **Publisher — why media was empty.** Three faults compounded: the media tab tracker
+   lives in an MV3 service worker the browser kills at will, and on the next call
+   `publishMedia` published a *release* — Brave erasing its own channel; a content-script
+   metadata timeout (150 ms, routinely missed by a heavy streaming page) was treated as
+   "not media" and **deleted** the playing tab from the candidate set; and the heartbeat
+   only did a `GET`, so a browser playing one episode quietly aged out at 90 s.
+
+**Repairs.**
+
+- `auto` now means *infer the channel from configuration*, never try channels until one has
+  data. A "This page" preset resolves to `page`; everything else to `media`, because every
+  Context URL key that existed before channels did was a media search. Explicit modes win.
+- The legacy `contextStore` view is **media-only**. Absence of media is absence.
+- Failure names the channel: `no_media_context` / `no_page_context` / `no_project_context`,
+  and the key alerts instead of opening something wrong.
+- `publishMedia` **rebuilds the candidate set from the real tabs** before concluding there
+  is nothing playing; silence from a content script never demotes a tab; the metadata
+  deadline is 600 ms.
+- New `POST /sources/heartbeat` refreshes liveness **without** publishing, separating
+  "source alive" from "context changed", and reports which channels the browser still owns
+  so a service restart is noticed.
+- **Arbitration now prefers a dedicated browser over a general one.** With Chrome left on
+  the default `HYBRID`, a Chrome tab with a video would otherwise take media from the
+  browser whose entire job is media. Saying what a browser is *for* settles it, not
+  whichever tab was touched last.
+- Every media key on the profile — and in the generator and validator — now persists
+  `contextMode: media` explicitly rather than relying on a default. The plugin sends it and
+  the Property Inspector exposes a **Context** selector.
+
+**Runtime proof of the exact scenario**, against the live service: with Brave media
+`Regular Show` and Chrome page the Supabase title, ReelGood resolved
+`reelgood.com/search?q=Regular%20Show` and contained none of *Supabase / Emails /
+Authentication / Chrisyphus*. With media removed and the Supabase page still present, the
+same key returned **`no_media_context`** and launched nothing — both for an explicit
+`media` key and for an `auto` one. With Brave dedicated and Chrome on `HYBRID`, Chrome's
+media claim was refused as `lost_arbitration`.
+
+**Status: `VERIFIED AUTOMATED` + `VERIFIED RUNTIME` / `WAITING PHYSICAL RETEST`.** The
+owner has not yet repeated the hardware test, and it will only be valid once Brave's
+extension is reloaded onto this build — the Brave instance observed during the failure was
+running an earlier one and had none of the publisher repairs.
 
 ### Project-aware Context URL — `INVESTIGATION` (complete) / `BLOCKED` on current-project detection
 

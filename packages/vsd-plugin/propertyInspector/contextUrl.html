@@ -179,6 +179,14 @@
     />
     <div id="status" class="status"></div>
 
+    <label for="contextMode" style="margin-top: 12px">Context</label>
+    <select id="contextMode">
+      <option value="auto">Auto</option>
+      <option value="media">Media — what you are watching</option>
+      <option value="page">Current page — the work browser</option>
+      <option value="project">Project</option>
+    </select>
+
     <div class="section">
       <label class="check" for="autoIcon">
         <input id="autoIcon" type="checkbox" checked />
@@ -252,6 +260,7 @@
       var previewEl = document.getElementById('preview');
       var refreshEl = document.getElementById('refresh');
       var presetEl = document.getElementById('preset');
+      var contextModeEl = document.getElementById('contextMode');
 
       /** Populate the selector, grouped, from the catalog above. */
       (function buildPresetOptions() {
@@ -451,6 +460,12 @@
         settings.urlTemplate = input.value;
         settings.autoWebsiteIcon = autoIconEl.checked;
         /**
+         * Which channel this key reads. Recorded explicitly so a media key can
+         * never quietly resolve against the work browser's page — that is what
+         * made a ReelGood key search a Supabase admin page.
+         */
+        settings.contextMode = contextModeEl.value;
+        /**
          * Provenance only. Derived from the template, never the other way round,
          * so an edited preset stops claiming to be one. The runtime never reads it.
          */
@@ -496,6 +511,8 @@
       input.addEventListener('input', function () {
         userEdited = true;
         presetEl.value = presetIdForTemplate(input.value);
+        contextModeEl.value =
+          typeof settings.contextMode === 'string' ? settings.contextMode : 'auto';
         validate();
         renderLocalState();
         clearTimeout(saveTimer);
@@ -519,11 +536,18 @@
         if (!preset) return;
         userEdited = true;
         input.value = preset.urlTemplate;
+        // A preset knows which context it is about, so selecting one sets it.
+        contextModeEl.value = preset.group === 'This page' ? 'page' : 'media';
         validate();
         renderLocalState();
         clearTimeout(saveTimer);
         var changed = siteChanged();
         save(changed ? refreshIconState : null);
+      });
+
+      contextModeEl.addEventListener('change', function () {
+        userEdited = true;
+        save();
       });
 
       autoIconEl.addEventListener('change', function () {

@@ -6,6 +6,7 @@ import {
   BrowserMode,
   channelsFor,
   mayPublish,
+  isDedicatedTo,
   SOURCE_TTL_MS,
   ProjectContext,
 } from './contextChannels';
@@ -319,6 +320,83 @@ describe('mode changes', () => {
       reason: 'mode_forbids_channel',
     });
     expect(store.getRecord('media')).toBeNull();
+  });
+});
+
+describe('a dedicated browser outranks a general one', () => {
+  it('knows which modes are dedicated to which channel', () => {
+    expect(isDedicatedTo('MEDIA_BROWSER', 'media')).toBe(true);
+    expect(isDedicatedTo('MEDIA_BROWSER', 'page')).toBe(false);
+    expect(isDedicatedTo('WORK_BROWSER', 'page')).toBe(true);
+    expect(isDedicatedTo('WORK_BROWSER', 'project')).toBe(true);
+    expect(isDedicatedTo('WORK_BROWSER', 'media')).toBe(false);
+    // HYBRID publishes everything and is dedicated to nothing.
+    expect(isDedicatedTo('HYBRID', 'media')).toBe(false);
+    expect(isDedicatedTo('DISABLED', 'media')).toBe(false);
+  });
+
+  /**
+   * The owner's real setup: Brave assigned to media, Chrome left on the
+   * default HYBRID. Chrome opening a page with a video must not take the media
+   * channel from the browser whose whole job is media, however recently that
+   * tab was touched.
+   */
+  it('does not let a HYBRID browser take media from a MEDIA_BROWSER', () => {
+    const store = new ContextChannelStore();
+    const brave = source(BRAVE, 'MEDIA_BROWSER');
+    const chrome = source(CHROME, 'HYBRID');
+
+    store.observe(observation(brave, 'media', record('Regular Show'), { observedAt: 5000 }));
+
+    // Chrome later opens something with a video — more recent, but general.
+    const stolen = store.observe(
+      observation(chrome, 'media', record('Sharper'), { observedAt: 9000 })
+    );
+
+    expect(stolen).toEqual({ accepted: false, reason: 'lost_arbitration' });
+    expect(store.getRecord('media')!.canonicalTitle).toBe('Regular Show');
+    expect(store.get('media')!.browserInstanceId).toBe(BRAVE);
+  });
+
+  it('lets a dedicated browser take media from a general one', () => {
+    const store = new ContextChannelStore();
+    const chrome = source(CHROME, 'HYBRID');
+    const brave = source(BRAVE, 'MEDIA_BROWSER');
+
+    // Chrome got there first and more recently.
+    store.observe(observation(chrome, 'media', record('Sharper'), { observedAt: 9000 }));
+    const claimed = store.observe(
+      observation(brave, 'media', record('Regular Show'), { observedAt: 5000 })
+    );
+
+    expect(claimed).toMatchObject({ accepted: true });
+    expect(store.getRecord('media')!.canonicalTitle).toBe('Regular Show');
+  });
+
+  it('applies the same rule to page and project', () => {
+    const store = new ContextChannelStore();
+    const chrome = source(CHROME, 'WORK_BROWSER');
+    const other = source('zzz-hybrid', 'HYBRID');
+
+    store.observe(observation(chrome, 'page', record('Work'), { observedAt: 5000 }));
+    expect(
+      store.observe(observation(other, 'page', record('Something else'), { observedAt: 9000 }))
+    ).toEqual({ accepted: false, reason: 'lost_arbitration' });
+    expect(store.getRecord('page')!.canonicalTitle).toBe('Work');
+  });
+
+  /** Two dedicated browsers still fall back to recency. */
+  it('falls back to recency between two equally dedicated browsers', () => {
+    const store = new ContextChannelStore();
+    store.observe(
+      observation(source('aaa', 'MEDIA_BROWSER'), 'media', record('Older'), { observedAt: 5000 })
+    );
+    expect(
+      store.observe(
+        observation(source('bbb', 'MEDIA_BROWSER'), 'media', record('Newer'), { observedAt: 6000 })
+      )
+    ).toMatchObject({ accepted: true });
+    expect(store.getRecord('media')!.canonicalTitle).toBe('Newer');
   });
 });
 

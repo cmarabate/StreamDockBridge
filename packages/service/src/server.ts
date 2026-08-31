@@ -11,6 +11,7 @@ import {
 } from './transcriptForge';
 import { resolveUrlTemplate, placeholderValuesFrom } from './urlTemplate';
 import { IconService } from './iconService';
+import { CONTEXT_URL_PRESETS } from './contextUrlPresets';
 import {
   contextChannels,
   ContextChannel,
@@ -25,10 +26,9 @@ import {
 /**
  * Which channel a Context URL key reads.
  *
- * `auto` keeps every key written before channels existed behaving exactly as
- * it does today: media first, page as the fallback. An explicit mode is needed
- * because {url} and {hostname} are meaningful on both the media and the page
- * channel, so their intent cannot be inferred from the template alone.
+ * `auto` infers the channel from the key's CONFIGURATION. It emphatically does
+ * not mean "try channels until one has data" — that is what made a media key
+ * search a Supabase admin page when Brave had nothing to say.
  */
 export type ContextMode = 'auto' | 'media' | 'page' | 'project';
 
@@ -39,6 +39,35 @@ export function readContextMode(value: unknown): ContextMode {
     ? (value as ContextMode)
     : 'auto';
 }
+
+/**
+ * The one channel a key resolves against, decided before any context is read.
+ *
+ * An explicit mode always wins. `auto` looks at the template: a preset from the
+ * "This page" group is about the page in front of you, and everything else is a
+ * media search. Media is the default for an unrecognised template because every
+ * Context URL key that existed before channels did was a media search — that is
+ * the documented compatibility choice, and it fails closed rather than reaching
+ * for another channel's data.
+ */
+export function resolveContextChannel(
+  mode: ContextMode,
+  urlTemplate: string
+): ContextChannel {
+  if (mode !== 'auto') return mode;
+
+  const preset = CONTEXT_URL_PRESETS.find((p) => p.urlTemplate === urlTemplate);
+  if (preset && preset.group === 'This page') return 'page';
+
+  return 'media';
+}
+
+/** Named per channel so a key that fails says which context it needed. */
+export const NO_CONTEXT_ERROR: Record<ContextChannel, string> = {
+  media: 'no_media_context',
+  page: 'no_page_context',
+  project: 'no_project_context',
+};
 
 /** Trusted only for routing, never for authorization — the secret does that. */
 export function readSourceIdentity(value: unknown): SourceIdentity | null {
@@ -370,6 +399,52 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
       return;
     }
 
+    /**
+     * "I am still here."
+     *
+     * Liveness and content are different things. A browser playing one episode
+     * for an hour publishes nothing new, and without this its source would age
+     * out and its media channel would be released mid-playback — the owner
+     * would press a media key and get nothing. This refreshes lastSeen without
+     * touching any channel.
+     */
+    if (req.method === 'POST' && pathname === '/sources/heartbeat') {
+      if (!isAllowedOrigin(origin, allowAnyExtension)) {
+        sendJson(403, { success: false, error: 'origin_forbidden' });
+        return;
+      }
+      const clientSecret = req.headers['x-bridge-secret'];
+      if (!secretStore.verifySecret(clientSecret as string | undefined)) {
+        sendJson(401, { success: false, error: 'unauthorized' });
+        return;
+      }
+
+      let body = '';
+      req.on('data', (chunk) => {
+        body += chunk;
+      });
+      req.on('end', () => {
+        try {
+          const source = readSourceIdentity(JSON.parse(body)?.source);
+          if (!source) {
+            sendJson(400, { success: false, error: 'missing_source' });
+            return;
+          }
+          const accepted = contextChannels.registerSource(source);
+          // Tell the browser whether the service still holds its channels, so a
+          // restart is noticed without a second round trip.
+          const owned = CONTEXT_CHANNELS.filter((c) => {
+            const state = contextChannels.get(c);
+            return state ? state.browserInstanceId === source.browserInstanceId : false;
+          });
+          sendJson(200, { success: true, accepted, owned });
+        } catch (e) {
+          sendJson(400, { success: false, error: 'invalid_json' });
+        }
+      });
+      return;
+    }
+
     /** Which browser installations the service has heard from. */
     if (req.method === 'GET' && pathname === '/sources') {
       if (!isAllowedOrigin(origin, allowAnyExtension)) {
@@ -513,28 +588,22 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
         }
 
         /**
-         * `auto` is media-then-page, which is exactly what the single-context
-         * store did, so every key configured before channels existed resolves
-         * against the same thing it always has.
+         * The channel is chosen from configuration, then read. There is no
+         * second attempt: if the chosen channel is empty the key fails, and
+         * says which context it wanted.
          */
-        const current =
-          contextMode === 'media'
-            ? contextChannels.getRecord('media')
-            : contextMode === 'page'
-            ? contextChannels.getRecord('page')
-            : contextMode === 'project'
-            ? null
-            : contextStore.getCurrentRecord();
+        const channel = resolveContextChannel(contextMode, template);
 
-        if (contextMode === 'project') {
+        if (channel === 'project') {
           // Project templates need project placeholders, which do not exist
           // yet. Failing loudly beats opening some other project's page.
           sendJson(400, { success: false, error: 'project_context_unsupported' });
           return;
         }
 
-        if (!current) {
-          sendJson(400, { success: false, error: 'no_usable_context' });
+        const current = contextChannels.getRecord(channel);
+        if (!current || !current.canonicalTitle) {
+          sendJson(400, { success: false, error: NO_CONTEXT_ERROR[channel] });
           return;
         }
 

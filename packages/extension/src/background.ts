@@ -182,10 +182,19 @@ export async function noteTabActivated(tabId: number, windowId: number): Promise
   if (!tab) return;
 
   const url = tab.url || tab.pendingUrl || '';
-  const meta = await requestMetadata(tabId, url, tab.title || '');
+  const meta = await requestMetadata(tabId);
   const wasOwner = mediaTabs.current()?.tabId === tabId;
 
-  mediaTabs.noteActivated(tabId, windowId, url, looksLikeMedia(meta));
+  /**
+   * No answer means we do not know, not that this is not media. A tab we
+   * already believe is playing keeps that standing; one we know nothing about
+   * simply is not promoted.
+   */
+  if (meta === null) {
+    if (!mediaTabs.has(tabId)) return;
+  } else {
+    mediaTabs.noteActivated(tabId, windowId, url, looksLikeMedia(meta));
+  }
 
   // Only bother the service when ownership actually moved.
   if (mediaTabs.current()?.tabId !== tabId || wasOwner) {
@@ -239,19 +248,48 @@ export async function sayGoodbye(): Promise<void> {
 export async function heartbeatTick(): Promise<void> {
   try {
     const role = await getRole();
-    const res = await fetch(`${SERVICE_URL}/sources`);
+    const allowed = channelsFor(role.mode);
+
+    const secret = await getSecret();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (secret) headers['X-Bridge-Secret'] = secret;
+
+    /**
+     * Says "still here" without publishing anything. A browser playing one
+     * episode for an hour has no new observation to make, and its source must
+     * not age out underneath it — that would release media mid-playback.
+     */
+    const res = await fetch(`${SERVICE_URL}/sources/heartbeat`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        source: {
+          browserInstanceId: role.browserInstanceId,
+          browserFamily: role.browserFamily,
+          displayName: role.displayName,
+          mode: role.mode,
+          connectionGeneration: role.connectionGeneration,
+        },
+      }),
+    });
+
     if (!res.ok) {
       isServiceOffline = true;
       return;
     }
     isServiceOffline = false;
+
     const data = await res.json();
-    const sources: Array<{ browserInstanceId?: string }> = Array.isArray(data?.sources)
-      ? data.sources
-      : [];
-    const known = sources.some((s) => s && s.browserInstanceId === role.browserInstanceId);
-    // Either the service forgot us, or it restarted. Say everything again.
-    if (!known) await republishAll();
+    const owned: string[] = Array.isArray(data?.owned) ? data.owned : [];
+
+    /**
+     * The service does not hold a channel this browser is supposed to be
+     * publishing — it restarted, or the channel was released while the worker
+     * was asleep. Say everything again rather than waiting for the user to do
+     * something.
+     */
+    const missing = allowed.filter((c) => c !== 'project' && !owned.includes(c));
+    if (missing.length > 0) await republishAll();
   } catch (e) {
     isServiceOffline = true;
   }
@@ -381,7 +419,14 @@ export async function syncActiveContext(retryCount = 0) {
      * browser publishes media. Keeping the tracker current in every mode means
      * switching a browser to Media later does not start from an empty set.
      */
-    mediaTabs.noteEvidence(tabId, tabWindowId, tabUrl, looksLikeMedia(meta));
+    /**
+     * Only a real answer changes eligibility. The fallback meta built above
+     * when the content script does not reply carries no media evidence, and
+     * treating that as "not media" is what removed a playing tab from the set.
+     */
+    if (meta.ogType || meta.jsonLdType || meta.hasVideo !== undefined) {
+      mediaTabs.noteEvidence(tabId, tabWindowId, tabUrl, looksLikeMedia(meta));
+    }
 
     const role = await getRole();
     const allowed = channelsFor(role.mode);
@@ -454,7 +499,23 @@ export async function publishMedia(role?: BrowserRole): Promise<void> {
   const resolved = role || (await getRole());
   if (!channelsFor(resolved.mode).includes('media')) return;
 
-  const owner = mediaTabs.current();
+  let owner = mediaTabs.current();
+
+  /**
+   * An empty tracker is not evidence that nothing is playing.
+   *
+   * This map lives in an MV3 service worker, which the browser kills whenever
+   * it feels like it, and it comes back empty. Publishing a RELEASE at that
+   * moment is how Brave erased its own media channel while Regular Show was
+   * still playing — and then a media key, finding nothing, fell through to
+   * whatever Chrome was showing. Rebuild from the real tabs before concluding
+   * there is nothing to play.
+   */
+  if (!owner) {
+    await rebuildMediaTabs();
+    owner = mediaTabs.current();
+  }
+
   if (!owner) {
     await postObservation(resolved, 'media', null);
     return;
@@ -489,7 +550,8 @@ export async function publishMedia(role?: BrowserRole): Promise<void> {
     // A tab on an internal page has no usable hostname.
   }
 
-  const meta = await requestMetadata(tab.id, url, tab.title || '');
+  // Silence here costs richer titles, never the channel itself.
+  const meta = (await requestMetadata(tab.id)) || { documentTitle: tab.title || url };
 
   await postObservation(resolved, 'media', {
     url,
@@ -505,16 +567,26 @@ export async function publishMedia(role?: BrowserRole): Promise<void> {
   });
 }
 
-/** Ask a tab's content script what it knows, with a short deadline. */
-function requestMetadata(tabId: number, url: string, title: string): Promise<PageMetadata> {
+/**
+ * Ask a tab's content script what it knows.
+ *
+ * Returns null when the script did not answer, which is NOT the same as
+ * answering "this is not media". A streaming page is heavy and routinely
+ * misses a short deadline; treating that silence as a negative is what deleted
+ * a playing tab from the candidate set. The deadline is generous for the same
+ * reason — this runs in the background, so waiting costs nothing visible.
+ */
+export const METADATA_TIMEOUT_MS = 600;
+
+function requestMetadata(tabId: number): Promise<PageMetadata | null> {
   return new Promise((resolve) => {
     let settled = false;
     const timer = setTimeout(() => {
       if (!settled) {
         settled = true;
-        resolve({ url, documentTitle: title });
+        resolve(null);
       }
-    }, 150);
+    }, METADATA_TIMEOUT_MS);
     try {
       chrome.tabs.sendMessage(tabId, { action: 'GET_METADATA' }, (response) => {
         const err = chrome.runtime.lastError;
@@ -522,16 +594,57 @@ function requestMetadata(tabId: number, url: string, title: string): Promise<Pag
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve(err || !response ? { url, documentTitle: title } : response);
+        resolve(err || !response ? null : response);
       });
     } catch (e) {
       if (!settled) {
         settled = true;
         clearTimeout(timer);
-        resolve({ url, documentTitle: title });
+        resolve(null);
       }
     }
   });
+}
+
+/**
+ * Ask every tab whether it is playing something, and repopulate the tracker.
+ *
+ * Only ever ADDS candidates. A tab that does not answer is left out of this
+ * pass rather than being recorded as not-media, because silence is ignorance.
+ */
+export async function rebuildMediaTabs(): Promise<void> {
+  if (typeof chrome === 'undefined' || !chrome.tabs) return;
+
+  const tabs = await new Promise<chrome.tabs.Tab[]>((resolve) => {
+    try {
+      chrome.tabs.query({}, (result) => {
+        const err = chrome.runtime.lastError;
+        if (err) { void err.message; }
+        resolve(Array.isArray(result) ? result : []);
+      });
+    } catch (e) {
+      resolve([]);
+    }
+  });
+
+  // Bounded: a browser with hundreds of tabs must not turn this into a storm.
+  const candidates = tabs.filter((t) => typeof t.id === 'number' && /^https?:/.test(t.url || ''));
+  const scanned = candidates.slice(0, 40);
+
+  const results = await Promise.all(
+    scanned.map(async (tab) => ({ tab, meta: await requestMetadata(tab.id as number) }))
+  );
+
+  for (const { tab, meta } of results) {
+    if (!meta) continue; // no answer is not a negative answer
+    if (!looksLikeMedia(meta)) continue;
+    /**
+     * Recorded as evidence rather than activation, so a rebuild never invents
+     * an activation order. The active tab keeps its natural precedence because
+     * a real activation always outranks these.
+     */
+    mediaTabs.noteEvidence(tab.id as number, tab.windowId ?? 0, tab.url || '', true);
+  }
 }
 
 export function initExtension() {
