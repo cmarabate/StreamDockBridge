@@ -77,6 +77,9 @@ describe('Extension Background Unit Tests (Single Authority Rules A-G)', () => {
           remove: jest.fn((keys, cb) => cb && cb()),
         },
       },
+      scripting: {
+        executeScript: jest.fn(async () => [{ result: undefined }]),
+      },
       alarms: {
         create: jest.fn(),
         onAlarm: {
@@ -275,12 +278,12 @@ describe('Extension Background Unit Tests (Single Authority Rules A-G)', () => {
     );
   });
 
-  // TEST G: manifest permissions do NOT contain activeTab
-  it('TEST G — manifest assertion: permissions do NOT contain activeTab', () => {
+  // TEST G: manifest permissions contain scripting and do NOT contain activeTab
+  it('TEST G — manifest assertion: permissions contain scripting and do NOT contain activeTab', () => {
     const manifestPath = path.resolve(__dirname, '../manifest.json');
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
     expect(manifest.permissions).not.toContain('activeTab');
-    expect(manifest.permissions).toEqual(['tabs', 'storage', 'alarms']);
+    expect(manifest.permissions).toEqual(['tabs', 'storage', 'alarms', 'scripting']);
   });
 
   // TEST H: recoveryTick with null context republishes via the focused tab
@@ -313,5 +316,210 @@ describe('Extension Background Unit Tests (Single Authority Rules A-G)', () => {
     await bg.recoveryTick();
 
     expect(getAllMock).not.toHaveBeenCalled();
+  });
+
+  describe('Extension Reload & Content Script Bootstrap Recovery', () => {
+    it('isScriptableUrl validates http/https schemes and rejects privileged/restricted URLs', () => {
+      expect(bg.isScriptableUrl('https://www.disneyplus.com/play/123')).toBe(true);
+      expect(bg.isScriptableUrl('http://127.0.0.1:3000')).toBe(true);
+      expect(bg.isScriptableUrl('http://localhost:8080')).toBe(true);
+
+      expect(bg.isScriptableUrl('chrome://settings')).toBe(false);
+      expect(bg.isScriptableUrl('brave://settings')).toBe(false);
+      expect(bg.isScriptableUrl('edge://extensions')).toBe(false);
+      expect(bg.isScriptableUrl('devtools://devtools/bundled/inspector.html')).toBe(false);
+      expect(bg.isScriptableUrl('chrome-extension://abcdef/options.html')).toBe(false);
+      expect(bg.isScriptableUrl('about:blank')).toBe(false);
+      expect(bg.isScriptableUrl('file:///C:/video.mp4')).toBe(false);
+      expect(bg.isScriptableUrl('https://chromewebstore.google.com/detail/123')).toBe(false);
+      expect(bg.isScriptableUrl('https://chrome.google.com/webstore/detail/123')).toBe(false);
+      expect(bg.isScriptableUrl('')).toBe(false);
+      expect(bg.isScriptableUrl(undefined)).toBe(false);
+      expect(bg.isScriptableUrl(null)).toBe(false);
+    });
+
+    it('requestMetadata recovers via chrome.scripting.executeScript when content script was severed', async () => {
+      const executeScriptMock = (global as any).chrome.scripting.executeScript as jest.Mock;
+      executeScriptMock.mockClear();
+
+      let attempts = 0;
+      (global as any).chrome.tabs.sendMessage = jest.fn((tabId, msg, cb) => {
+        attempts++;
+        if (attempts === 1) {
+          // First attempt fails (orphaned content script / no receiver)
+          (global as any).chrome.runtime.lastError = { message: 'Could not establish connection. Receiving end does not exist.' };
+          cb(undefined);
+          (global as any).chrome.runtime.lastError = undefined;
+        } else {
+          // After programmatic injection, second attempt succeeds
+          cb({ documentTitle: 'Regular Show | Disney+', hasVideo: true });
+        }
+      });
+
+      const meta = await bg.requestMetadata(101, 'https://www.disneyplus.com/play/123');
+
+      expect(executeScriptMock).toHaveBeenCalledTimes(1);
+      expect(executeScriptMock).toHaveBeenCalledWith({
+        target: { tabId: 101 },
+        files: ['dist/content.js'],
+      });
+      expect(meta).toEqual({
+        documentTitle: 'Regular Show | Disney+',
+        hasVideo: true,
+      });
+    });
+
+    it('requestMetadata does NOT execute script on privileged chrome:// or brave:// URLs', async () => {
+      const executeScriptMock = (global as any).chrome.scripting.executeScript as jest.Mock;
+      executeScriptMock.mockClear();
+
+      (global as any).chrome.tabs.sendMessage = jest.fn((tabId, msg, cb) => {
+        (global as any).chrome.runtime.lastError = { message: 'No receiver' };
+        cb(undefined);
+        (global as any).chrome.runtime.lastError = undefined;
+      });
+
+      const meta = await bg.requestMetadata(202, 'brave://settings');
+
+      expect(executeScriptMock).not.toHaveBeenCalled();
+      expect(meta).toBeNull();
+    });
+
+    it('rebuildMediaTabs reacquires media from open tabs after reload and orders by lastAccessed', async () => {
+      const executeScriptMock = (global as any).chrome.scripting.executeScript as jest.Mock;
+      executeScriptMock.mockClear();
+
+      // Tab query returns 3 open tabs:
+      // Tab 101: Media tab, lastAccessed: 1000 (older)
+      // Tab 102: Media tab, lastAccessed: 2000 (newer)
+      // Tab 103: Privileged brave:// tab
+      (global as any).chrome.tabs.query = jest.fn((queryInfo, cb) => {
+        cb([
+          { id: 101, windowId: 1, active: false, url: 'https://disneyplus.com/play/101', lastAccessed: 1000 },
+          { id: 102, windowId: 1, active: false, url: 'https://disneyplus.com/play/102', lastAccessed: 2000 },
+          { id: 103, windowId: 1, active: false, url: 'brave://rewards', lastAccessed: 3000 },
+        ]);
+      });
+
+      (global as any).chrome.tabs.sendMessage = jest.fn((tabId, msg, cb) => {
+        if (tabId === 101) {
+          cb({ documentTitle: 'Old Show | Disney+', hasVideo: true });
+        } else if (tabId === 102) {
+          cb({ documentTitle: 'Regular Show | Disney+', hasVideo: true });
+        } else {
+          cb(null);
+        }
+      });
+
+      bg.getMediaTabs().clear();
+      await bg.rebuildMediaTabs(true);
+
+      const mediaTabs = bg.getMediaTabs();
+      expect(mediaTabs.size()).toBe(2);
+      // Tab 102 had higher lastAccessed (2000 vs 1000), so it was inserted first and is the current media owner!
+      expect(mediaTabs.current()?.tabId).toBe(102);
+      expect(mediaTabs.current()?.url).toBe('https://disneyplus.com/play/102');
+    });
+
+    it('rebuildMediaTabs prioritizes active tab over non-active tabs regardless of lastAccessed', async () => {
+      (global as any).chrome.tabs.query = jest.fn((queryInfo, cb) => {
+        cb([
+          { id: 101, windowId: 1, active: false, url: 'https://disneyplus.com/play/101', lastAccessed: 5000 },
+          { id: 102, windowId: 1, active: true, url: 'https://disneyplus.com/play/102', lastAccessed: 1000 },
+        ]);
+      });
+
+      (global as any).chrome.tabs.sendMessage = jest.fn((tabId, msg, cb) => {
+        if (tabId === 101) {
+          cb({ documentTitle: 'Background Show', hasVideo: true });
+        } else if (tabId === 102) {
+          cb({ documentTitle: 'Active Show', hasVideo: true });
+        } else {
+          cb(null);
+        }
+      });
+
+      bg.getMediaTabs().clear();
+      await bg.rebuildMediaTabs(true);
+
+      const mediaTabs = bg.getMediaTabs();
+      expect(mediaTabs.current()?.tabId).toBe(102);
+    });
+
+    it('autoRebuildOnStartup in MEDIA_BROWSER mode automatically publishes media context to service', async () => {
+      // Mock storage for MEDIA_BROWSER role
+      (global as any).chrome.storage.local.get = jest.fn((keys, cb) => {
+        cb({
+          browserInstanceId: 'test-media-browser-id',
+          browserFamily: 'brave',
+          displayName: 'Brave Media',
+          mode: 'MEDIA_BROWSER',
+          connectionGeneration: 1,
+        });
+      });
+
+      (global as any).chrome.tabs.query = jest.fn((queryInfo, cb) => {
+        cb([
+          { id: 101, windowId: 1, active: true, url: 'https://disneyplus.com/play/regular-show', title: 'Regular Show | Disney+' },
+        ]);
+      });
+
+      (global as any).chrome.tabs.get = jest.fn((tabId, cb) => {
+        cb({ id: 101, windowId: 1, active: true, url: 'https://disneyplus.com/play/regular-show', title: 'Regular Show | Disney+' });
+      });
+
+      (global as any).chrome.tabs.sendMessage = jest.fn((tabId, msg, cb) => {
+        cb({ documentTitle: 'Regular Show | Disney+', jsonLdTitle: 'Regular Show', hasVideo: true });
+      });
+
+      mockFetch.mockClear();
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ success: true, secret: 'test-secret' }),
+      });
+
+      bg.getMediaTabs().clear();
+      bg.invalidateRole();
+
+      await bg.autoRebuildOnStartup();
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        'http://127.0.0.1:17337/context',
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.stringContaining('Regular Show'),
+        })
+      );
+    });
+
+    it('handles tab closing or navigating during bootstrap gracefully', async () => {
+      const executeScriptMock = (global as any).chrome.scripting.executeScript as jest.Mock;
+      executeScriptMock.mockRejectedValueOnce(new Error('No tab with id: 999'));
+
+      (global as any).chrome.tabs.sendMessage = jest.fn((tabId, msg, cb) => {
+        (global as any).chrome.runtime.lastError = { message: 'Receiving end does not exist' };
+        cb(undefined);
+        (global as any).chrome.runtime.lastError = undefined;
+      });
+
+      const meta = await bg.requestMetadata(999, 'https://disneyplus.com/play/999');
+      expect(meta).toBeNull();
+    });
+
+    it('service worker restart without extension reload uses direct messaging without executeScript', async () => {
+      const executeScriptMock = (global as any).chrome.scripting.executeScript as jest.Mock;
+      executeScriptMock.mockClear();
+
+      (global as any).chrome.tabs.sendMessage = jest.fn((tabId, msg, cb) => {
+        cb({ documentTitle: 'Existing Live Content Script', hasVideo: true });
+      });
+
+      const meta = await bg.requestMetadata(101, 'https://disneyplus.com/play/101');
+      expect(executeScriptMock).not.toHaveBeenCalled();
+      expect(meta).toEqual({
+        documentTitle: 'Existing Live Content Script',
+        hasVideo: true,
+      });
+    });
   });
 });

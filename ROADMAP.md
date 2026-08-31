@@ -844,14 +844,30 @@ Transcribe reads media **then page** again — and that second look is safe ther
 because `isSupportedTranscriptionUrl` refuses anything that is not a video platform. A
 media *search* has no such guard, which is exactly why it must never fall back.
 
-**Status: `VERIFIED AUTOMATED` + `VERIFIED RUNTIME` / `WAITING PHYSICAL RETEST`.**
+### Media recovery after extension reload — `DONE` / `VERIFIED AUTOMATED` + `VERIFIED RUNTIME` / `WAITING PHYSICAL RETEST`
 
-The retest is blocked on one owner action. Brave re-registers with the service within a
-second, but its media channel is empty and its `connectionGeneration` has been stuck at 4
-across many service restarts — its MV3 worker has been alive continuously since then and is
-still running pre-repair code from memory. The manifest also gained `options_ui`, which a
-worker restart alone cannot apply. **The StreamDockBridge extension must be reloaded in
-Brave** before the hardware test measures this build at all.
+**Physical reproduction evidence (owner confirmed on 2026-08-30):**
+- Browser modes: Brave = `MEDIA_BROWSER`, Chrome = `WORK_BROWSER`. (Prior failure was NOT due to Chrome being `HYBRID`).
+- **Strict channel isolation — PHYSICAL BEHAVIOR OBSERVED:**
+  When Media was absent after reloading the extension, pressing a media Context URL key showed the yellow VSD warning / showAlert and opened nothing. It did NOT consume the Chrome Page channel. Strict fail-closed Media/Page isolation was physically proven.
+- **Extension reload media recovery — FAILED PHYSICAL:**
+  Media remained `none` until the owner refreshed ONLY the already-open Regular Show streaming page in Brave. Immediately after page refresh, Brave rediscovered the media and the media keys worked.
+  **Conclusive root cause:** Chromium MV3 extension reload invalidates the content script `chrome.runtime` bridge in existing tabs, and declarative content scripts are not automatically re-injected into already-open tabs until those tabs reload.
+
+**Repairs implemented:**
+1. **Manifest permission**: Added `"scripting"` permission to `packages/extension/manifest.json`.
+2. **Programmatic bootstrap recovery**: `requestMetadata` in `packages/extension/src/background.ts` attempts standard messaging (`GET_METADATA`). If messaging fails/times out on an eligible HTTP(S) URL, it programmatically injects `dist/content.js` via `chrome.scripting.executeScript({ target: { tabId }, files: ['dist/content.js'] })` and retries messaging.
+3. **Idempotent content script listener**: `initContentScript` in `packages/extension/src/content.ts` guards registration via `window.__STREAM_DOCK_BRIDGE_CONTENT__.installedRuntimeId === chrome.runtime.id`, preventing duplicate listeners or event handlers across declarative and programmatic injections.
+4. **Activation recency reconstruction**: `runRebuild` orders candidates with active tabs first, followed by non-active tabs sorted descending by `tab.lastAccessed`. Probing is strictly bounded to the top 40 candidates.
+5. **Startup auto-rebuild**: `initExtension`, `chrome.runtime.onStartup`, and `chrome.runtime.onInstalled` trigger `rebuildMediaTabs(true)` for `MEDIA_BROWSER` and `HYBRID` modes, restoring media context immediately on extension reload without requiring page reload.
+6. **Strict scheme security**: Non-scriptable schemes (`chrome://`, `brave://`, `edge://`, `devtools://`, `chrome-extension://`, `about:`, `file:`, and Chrome Web Store galleries) are strictly rejected before any script execution.
+
+**Verification & Proof:**
+- **Automated**: 625 tests / 31 test suites passing (`yarn test:ci`, `yarn verify:build`, `yarn verify:ts`, `yarn verify:lint`, `yarn build`, `yarn typecheck`, `yarn lint`, `git diff --check`).
+- **Runtime**: Verified against live service (`127.0.0.1:17337`): simulated reload without page refresh reacquires Regular Show, Context URL lookups resolve to Regular Show in Chrome browser, and missing media fails closed with `no_media_context` / showAlert without falling back to Page.
+- **Adversarial review**: Independent read-only adversarial review passed with PASS / ROBUST across duplicate injection protection, security boundaries, tab race resilience, recency reconstruction, quiet playback preservation, and strict channel isolation.
+
+**Status: `VERIFIED AUTOMATED` + `VERIFIED RUNTIME` / `WAITING OWNER PHYSICAL RETEST`.**
 
 ### Project-aware Context URL — `INVESTIGATION` (complete) / `BLOCKED` on current-project detection
 

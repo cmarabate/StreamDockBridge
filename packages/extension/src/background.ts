@@ -349,37 +349,10 @@ export async function syncActiveContext(retryCount = 0) {
     let meta: PageMetadata = { url: tabUrl, documentTitle: targetTab.title || '' };
 
     try {
-      meta = await new Promise<PageMetadata>((resolve) => {
-        let resolved = false;
-        const timer = setTimeout(() => {
-          if (!resolved) {
-            resolved = true;
-            resolve({ url: tabUrl, documentTitle: targetTab?.title || '' });
-          }
-        }, 150);
-
-        try {
-          chrome.tabs.sendMessage(tabId, { action: 'GET_METADATA' }, (response) => {
-            const sendErr = chrome.runtime.lastError;
-            if (sendErr) { void sendErr.message; }
-            if (!resolved) {
-              resolved = true;
-              clearTimeout(timer);
-              if (sendErr || !response) {
-                resolve({ url: tabUrl, documentTitle: targetTab?.title || '' });
-              } else {
-                resolve(response);
-              }
-            }
-          });
-        } catch (e) {
-          if (!resolved) {
-            resolved = true;
-            clearTimeout(timer);
-            resolve({ url: tabUrl, documentTitle: targetTab?.title || '' });
-          }
-        }
-      });
+      const fetched = await requestMetadata(tabId, tabUrl);
+      if (fetched) {
+        meta = fetched;
+      }
     } catch (e) {
       // Message error fallback
     }
@@ -558,7 +531,7 @@ export async function publishMedia(role?: BrowserRole): Promise<void> {
   }
 
   // Silence here costs richer titles, never the channel itself.
-  const meta = (await requestMetadata(tab.id)) || { documentTitle: tab.title || url };
+  const meta = (await requestMetadata(tab.id, url)) || { documentTitle: tab.title || url };
 
   await postObservation(resolved, 'media', {
     url,
@@ -575,6 +548,55 @@ export async function publishMedia(role?: BrowserRole): Promise<void> {
 }
 
 /**
+ * Checks if a tab URL is eligible for content scripting.
+ *
+ * MV3 executeScript is only permitted on http/https (and 127.0.0.1).
+ * Privileged schemes like chrome://, brave://, devtools://, chrome-extension://,
+ * edge://, about: and Web Store galleries throw runtime exceptions and are skipped.
+ */
+export function isScriptableUrl(url?: string | null): boolean {
+  if (!url || typeof url !== 'string') return false;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    const host = parsed.hostname.toLowerCase();
+    if (
+      host === 'chromewebstore.google.com' ||
+      (host === 'chrome.google.com' && parsed.pathname.startsWith('/webstore'))
+    ) {
+      return false;
+    }
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * Programmatically injects the content script into an open tab if needed.
+ *
+ * Used as a safe fallback when an extension is reloaded/updated and existing tabs
+ * have orphaned/invalidated content script receivers.
+ */
+export async function ensureContentScriptInjected(tabId: number, url?: string): Promise<boolean> {
+  if (typeof chrome === 'undefined' || !chrome.scripting || !chrome.scripting.executeScript) {
+    return false;
+  }
+  if (url && !isScriptableUrl(url)) {
+    return false;
+  }
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['dist/content.js'],
+    });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
  * Ask a tab's content script what it knows.
  *
  * Returns null when the script did not answer, which is NOT the same as
@@ -585,7 +607,10 @@ export async function publishMedia(role?: BrowserRole): Promise<void> {
  */
 export const METADATA_TIMEOUT_MS = 600;
 
-function requestMetadata(tabId: number): Promise<PageMetadata | null> {
+export function sendGetMetadataMessage(
+  tabId: number,
+  timeoutMs = METADATA_TIMEOUT_MS
+): Promise<PageMetadata | null> {
   return new Promise((resolve) => {
     let settled = false;
     const timer = setTimeout(() => {
@@ -593,7 +618,7 @@ function requestMetadata(tabId: number): Promise<PageMetadata | null> {
         settled = true;
         resolve(null);
       }
-    }, METADATA_TIMEOUT_MS);
+    }, timeoutMs);
     try {
       chrome.tabs.sendMessage(tabId, { action: 'GET_METADATA' }, (response) => {
         const err = chrome.runtime.lastError;
@@ -611,6 +636,26 @@ function requestMetadata(tabId: number): Promise<PageMetadata | null> {
       }
     }
   });
+}
+
+export async function requestMetadata(
+  tabId: number,
+  tabUrl?: string
+): Promise<PageMetadata | null> {
+  const direct = await sendGetMetadataMessage(tabId, METADATA_TIMEOUT_MS);
+  if (direct !== null) {
+    return direct;
+  }
+
+  // If no receiver responded and the tab has a scriptable URL, recover via programmatic injection
+  if (tabUrl && isScriptableUrl(tabUrl)) {
+    const injected = await ensureContentScriptInjected(tabId, tabUrl);
+    if (injected) {
+      return sendGetMetadataMessage(tabId, 300);
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -658,36 +703,67 @@ async function runRebuild(): Promise<void> {
   });
 
   /**
-   * Bounded, but not by tab position.
-   *
-   * Taking the first 40 tabs in query order means a media tab sitting at index
-   * 45 is invisible forever, and the leftmost tab with any <video> wins. Active
-   * tabs are scanned first because they are what the user chose, then the rest.
+   * Filter for scriptable http(s) candidates.
    */
-  const candidates = tabs.filter((t) => typeof t.id === 'number' && /^https?:/.test(t.url || ''));
-  const scanned = [
-    ...candidates.filter((t) => t.active),
-    ...candidates.filter((t) => !t.active),
-  ].slice(0, 40);
+  const candidates = tabs.filter(
+    (t) => typeof t.id === 'number' && isScriptableUrl(t.url || t.pendingUrl)
+  );
+
+  /**
+   * Reconstruct activation recency after reload:
+   * 1. Active tabs in focused window or active tabs across windows.
+   * 2. Non-active tabs ordered by tab.lastAccessed (descending).
+   * Bounded to top 40 candidates.
+   */
+  const activeTabs = candidates.filter((t) => t.active);
+  const nonActiveTabs = candidates
+    .filter((t) => !t.active)
+    .sort((a, b) => (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0));
+
+  const scanned = [...activeTabs, ...nonActiveTabs].slice(0, 40);
 
   const results = await Promise.all(
-    scanned.map(async (tab) => ({ tab, meta: await requestMetadata(tab.id as number) }))
+    scanned.map(async (tab) => ({
+      tab,
+      meta: await requestMetadata(tab.id as number, tab.url || tab.pendingUrl || ''),
+    }))
   );
 
   /**
    * Recorded as evidence rather than activation, so a rebuild never invents an
    * activation order and a real activation always outranks it.
    *
-   * Every rebuilt entry shares the same order, and `current()` breaks that tie
-   * by FIRST insertion, so the active tab is recorded first. Without this the
-   * leftmost tab holding any <video> would become the media owner after a
-   * worker restart.
+   * Every rebuilt entry shares the same order (0), and `current()` breaks that tie
+   * by FIRST insertion. Inserting active tabs first, then non-active sorted by lastAccessed,
+   * accurately preserves user recency.
    */
   const found = results.filter((r) => r.meta && looksLikeMedia(r.meta));
-  const ordered = [...found.filter((r) => r.tab.active), ...found.filter((r) => !r.tab.active)];
+  const ordered = [
+    ...found.filter((r) => r.tab.active),
+    ...found
+      .filter((r) => !r.tab.active)
+      .sort((a, b) => (b.tab.lastAccessed ?? 0) - (a.tab.lastAccessed ?? 0)),
+  ];
 
   for (const { tab } of ordered) {
-    mediaTabs.noteEvidence(tab.id as number, tab.windowId ?? 0, tab.url || '', true);
+    mediaTabs.noteEvidence(
+      tab.id as number,
+      tab.windowId ?? 0,
+      tab.url || tab.pendingUrl || '',
+      true
+    );
+  }
+}
+
+export async function autoRebuildOnStartup(): Promise<void> {
+  try {
+    const role = await getRole();
+    if (channelsFor(role.mode).includes('media')) {
+      await rebuildMediaTabs(true);
+      await publishMedia(role);
+    }
+  } catch (e) {
+    // Best effort startup recovery
   }
 }
 
@@ -701,12 +777,15 @@ export function initExtension() {
           focusedWindowId = win.id;
         }
         syncActiveContext();
+        void autoRebuildOnStartup();
       });
     } else {
       syncActiveContext();
+      void autoRebuildOnStartup();
     }
   } catch (e) {
     syncActiveContext();
+    void autoRebuildOnStartup();
   }
 }
 
@@ -714,9 +793,11 @@ export function initExtension() {
 try {
   (globalThis as any)['syncActiveContext'] = syncActiveContext;
   (globalThis as any)['initExtension'] = initExtension;
+  (globalThis as any)['autoRebuildOnStartup'] = autoRebuildOnStartup;
   if (typeof self !== 'undefined') {
     (self as any)['syncActiveContext'] = syncActiveContext;
     (self as any)['initExtension'] = initExtension;
+    (self as any)['autoRebuildOnStartup'] = autoRebuildOnStartup;
   }
 } catch (e) {
   // Global scope may be locked down in some environments; safe to ignore.
@@ -725,8 +806,14 @@ try {
 // Synchronous top-level MV3 event listener registrations
 if (typeof chrome !== 'undefined') {
   if (chrome.runtime) {
-    chrome.runtime.onStartup?.addListener(() => syncActiveContext());
-    chrome.runtime.onInstalled?.addListener(() => syncActiveContext());
+    chrome.runtime.onStartup?.addListener(() => {
+      syncActiveContext();
+      void autoRebuildOnStartup();
+    });
+    chrome.runtime.onInstalled?.addListener(() => {
+      syncActiveContext();
+      void autoRebuildOnStartup();
+    });
   }
 
   if (chrome.windows) {
