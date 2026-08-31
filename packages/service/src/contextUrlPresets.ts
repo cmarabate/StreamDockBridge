@@ -16,7 +16,7 @@ import { PLACEHOLDERS } from './urlTemplate';
  * Every URL here was requested against the real site before being added.
  */
 
-export type PresetGroup = 'Media' | 'This page';
+export type PresetGroup = 'Media' | 'This page' | 'Project';
 
 export interface ContextUrlPreset {
   /** Stable id, recorded for provenance only. Never read at run time. */
@@ -122,10 +122,72 @@ export const CONTEXT_URL_PRESETS: ContextUrlPreset[] = [
     group: 'This page',
     urlTemplate: 'https://www.youtube.com/results?search_query={rawTitle}',
   },
+
+  // ---- Project: driven by the active workspace project -----------------------
+  {
+    id: 'github-repo',
+    label: 'GitHub Repository',
+    group: 'Project',
+    urlTemplate: 'https://github.com/{githubOwner}/{githubRepo}',
+  },
+  {
+    id: 'github-prs',
+    label: 'GitHub Pull Requests',
+    group: 'Project',
+    urlTemplate: 'https://github.com/{githubOwner}/{githubRepo}/pulls',
+  },
+  {
+    id: 'github-issues',
+    label: 'GitHub Issues',
+    group: 'Project',
+    urlTemplate: 'https://github.com/{githubOwner}/{githubRepo}/issues',
+  },
+  {
+    id: 'github-actions',
+    label: 'GitHub Actions',
+    group: 'Project',
+    urlTemplate: 'https://github.com/{githubOwner}/{githubRepo}/actions',
+  },
+  {
+    id: 'vercel-project',
+    label: 'Vercel Project',
+    group: 'Project',
+    urlTemplate: 'https://vercel.com/{vercelTeam}/{vercelProject}',
+  },
+  {
+    id: 'vercel-deployments',
+    label: 'Vercel Deployments',
+    group: 'Project',
+    urlTemplate: 'https://vercel.com/{vercelTeam}/{vercelProject}/deployments',
+  },
+  {
+    id: 'supabase-project',
+    label: 'Supabase Project',
+    group: 'Project',
+    urlTemplate: 'https://supabase.com/dashboard/project/{supabaseProjectRef}',
+  },
+  {
+    id: 'supabase-sql',
+    label: 'Supabase SQL',
+    group: 'Project',
+    urlTemplate: 'https://supabase.com/dashboard/project/{supabaseProjectRef}/sql',
+  },
+  {
+    id: 'supabase-logs',
+    label: 'Supabase Logs',
+    group: 'Project',
+    urlTemplate: 'https://supabase.com/dashboard/project/{supabaseProjectRef}/logs/explorer',
+  },
+  {
+    id: 'project-production',
+    label: 'Production Website',
+    group: 'Project',
+    urlTemplate: 'https://{projectDomain}',
+  },
 ];
 
 /** Groups in the order the panel should show them. */
-export const PRESET_GROUPS: PresetGroup[] = ['Media', 'This page'];
+export const PRESET_GROUPS: PresetGroup[] = ['Media', 'This page', 'Project'];
 
 export function findPreset(id: string): ContextUrlPreset | undefined {
   return CONTEXT_URL_PRESETS.find((preset) => preset.id === id);

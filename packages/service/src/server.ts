@@ -22,6 +22,14 @@ import {
   ProjectContext,
   ChannelPayload,
 } from './contextChannels';
+import { ProjectRegistryService } from './projectRegistry';
+import {
+  executeLocalProjectAction,
+  LocalProjectAction,
+  LOCAL_PROJECT_ACTIONS,
+} from './localActions';
+
+export const projectRegistry = new ProjectRegistryService();
 
 /**
  * Which channel a Context URL key reads.
@@ -44,11 +52,9 @@ export function readContextMode(value: unknown): ContextMode {
  * The one channel a key resolves against, decided before any context is read.
  *
  * An explicit mode always wins. `auto` looks at the template: a preset from the
- * "This page" group is about the page in front of you, and everything else is a
- * media search. Media is the default for an unrecognised template because every
- * Context URL key that existed before channels did was a media search — that is
- * the documented compatibility choice, and it fails closed rather than reaching
- * for another channel's data.
+ * "This page" group is about the page in front of you, a preset from the "Project"
+ * group (or containing project placeholders) is about the project, and everything
+ * else is a media search.
  */
 export function resolveContextChannel(
   mode: ContextMode,
@@ -58,6 +64,19 @@ export function resolveContextChannel(
 
   const preset = CONTEXT_URL_PRESETS.find((p) => p.urlTemplate === urlTemplate);
   if (preset && preset.group === 'This page') return 'page';
+  if (preset && preset.group === 'Project') return 'project';
+
+  if (
+    urlTemplate.includes('{projectName}') ||
+    urlTemplate.includes('{githubOwner}') ||
+    urlTemplate.includes('{githubRepo}') ||
+    urlTemplate.includes('{vercelTeam}') ||
+    urlTemplate.includes('{vercelProject}') ||
+    urlTemplate.includes('{supabaseProjectRef}') ||
+    urlTemplate.includes('{projectDomain}')
+  ) {
+    return 'project';
+  }
 
   return 'media';
 }
@@ -124,9 +143,15 @@ export function readProjectContext(value: unknown): ProjectContext | null {
       ? raw.projectKey.trim().slice(0, 200)
       : null,
     projectName: name,
-    evidence: text(raw.evidence) || 'unknown',
-    githubOwner: text(raw.githubOwner),
+    localRepoPath: text(raw.localRepoPath) || null,
     githubRepo: text(raw.githubRepo),
+    githubOwner: text(raw.githubOwner),
+    githubRepoName: text(raw.githubRepoName),
+    vercelTeam: text(raw.vercelTeam),
+    vercelProject: text(raw.vercelProject),
+    supabaseProjectRef: text(raw.supabaseProjectRef),
+    projectDomain: text(raw.projectDomain),
+    evidence: text(raw.evidence) || 'unknown',
   };
 }
 
@@ -265,8 +290,9 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
         try {
           const payload = JSON.parse(body);
 
-          const rawTitle = payload.documentTitle || payload.rawTitle || '';
-          const cleanedTitle = deriveCanonicalTitle(payload);
+          const rawRecord = payload.payload && typeof payload.payload === 'object' ? payload.payload : payload;
+          const rawTitle = rawRecord.documentTitle || rawRecord.rawTitle || '';
+          const cleanedTitle = deriveCanonicalTitle(rawRecord);
 
           /**
            * The timestamp is client-supplied, and the legacy store compares it
@@ -275,21 +301,30 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
            * Never trust it beyond the server's own clock.
            */
           const now = Date.now();
-          const claimed = typeof payload.timestamp === 'number' ? payload.timestamp : now;
+          const claimed = typeof rawRecord.timestamp === 'number' ? rawRecord.timestamp : (typeof payload.timestamp === 'number' ? payload.timestamp : now);
           const timestamp = claimed > now ? now : claimed;
 
+          let hostname = rawRecord.hostname || '';
+          if (!hostname && rawRecord.url) {
+            try {
+              hostname = new URL(rawRecord.url).hostname;
+            } catch (_e) {
+              // Unparseable URL
+            }
+          }
+
           const record: ContextRecord = {
-            url: payload.url || '',
-            hostname: payload.hostname || '',
+            url: rawRecord.url || '',
+            hostname,
             rawTitle,
-            documentTitle: payload.documentTitle || '',
-            ogTitle: payload.ogTitle || '',
-            twitterTitle: payload.twitterTitle || '',
-            jsonLdTitle: payload.jsonLdTitle || '',
-            jsonLdSeriesTitle: payload.jsonLdSeriesTitle || '',
+            documentTitle: rawRecord.documentTitle || '',
+            ogTitle: rawRecord.ogTitle || '',
+            twitterTitle: rawRecord.twitterTitle || '',
+            jsonLdTitle: rawRecord.jsonLdTitle || '',
+            jsonLdSeriesTitle: rawRecord.jsonLdSeriesTitle || '',
             canonicalTitle: cleanedTitle,
-            tabId: payload.tabId ?? 0,
-            windowId: payload.windowId ?? 0,
+            tabId: rawRecord.tabId ?? payload.tabId ?? 0,
+            windowId: rawRecord.windowId ?? payload.windowId ?? 0,
             timestamp,
           };
 
@@ -340,6 +375,70 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
             },
             now
           );
+
+          if (result.accepted && channel === 'page' && observed) {
+            const pageRec = observed as ContextRecord;
+            const projMeta = projectRegistry.resolveProjectFromPage(
+              pageRec.url || '',
+              pageRec.rawTitle || pageRec.canonicalTitle || ''
+            );
+            if (projMeta) {
+              const projContext: ProjectContext = {
+                projectKey: projMeta.registryKey,
+                projectName: projMeta.projectName,
+                localRepoPath: projMeta.localRepoPath,
+                githubRepo: projMeta.githubRepo,
+                githubOwner: projMeta.githubOwner,
+                githubRepoName: projMeta.githubRepoName,
+                vercelTeam: projMeta.vercelTeam,
+                vercelProject: projMeta.vercelProject,
+                supabaseProjectRef: projMeta.supabaseProjectRef,
+                projectDomain: projMeta.projectDomain,
+                evidence: projMeta.matchedBy,
+              };
+              contextChannels.observe(
+                {
+                  source,
+                  channel: 'project',
+                  payload: projContext,
+                  tabId: record.tabId,
+                  windowId: record.windowId,
+                  observationSequence:
+                    typeof payload.observationSequence === 'number' ? payload.observationSequence : 0,
+                  observedAt: timestamp,
+                },
+                now
+              );
+            } else {
+              contextChannels.observe(
+                {
+                  source,
+                  channel: 'project',
+                  payload: null,
+                  tabId: record.tabId,
+                  windowId: record.windowId,
+                  observationSequence:
+                    typeof payload.observationSequence === 'number' ? payload.observationSequence : 0,
+                  observedAt: timestamp,
+                },
+                now
+              );
+            }
+          } else if (result.accepted && channel === 'page' && releasing) {
+            contextChannels.observe(
+              {
+                source,
+                channel: 'project',
+                payload: null,
+                tabId: record.tabId,
+                windowId: record.windowId,
+                observationSequence:
+                  typeof payload.observationSequence === 'number' ? payload.observationSequence : 0,
+                observedAt: timestamp,
+              },
+              now
+            );
+          }
 
           sendJson(200, {
             success: true,
@@ -612,9 +711,21 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
         const channel = resolveContextChannel(contextMode, template);
 
         if (channel === 'project') {
-          // Project templates need project placeholders, which do not exist
-          // yet. Failing loudly beats opening some other project's page.
-          sendJson(400, { success: false, error: 'project_context_unsupported' });
+          const currentProject = contextChannels.get('project')?.payload as ProjectContext | null;
+          if (!currentProject) {
+            sendJson(400, { success: false, error: NO_CONTEXT_ERROR['project'] });
+            return;
+          }
+
+          const values = placeholderValuesFrom(null, currentProject);
+          const result = resolveUrlTemplate(template, values);
+          if (!result.ok) {
+            sendJson(result.status, { success: false, error: result.error });
+            return;
+          }
+
+          launcher(result.url);
+          sendJson(200, { success: true, action: 'custom', resolvedUrl: result.url });
           return;
         }
 
@@ -632,6 +743,64 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
 
         launcher(result.url);
         sendJson(200, { success: true, action: 'custom', resolvedUrl: result.url });
+      });
+      return;
+    }
+
+    /**
+     * Closed local project actions.
+     *
+     * Safely executes predefined binary intents (Terminal, Explorer, VS Code, Copy Path)
+     * using the canonical localRepoPath from the active Project channel.
+     * Secret-gated; does not permit shell scripts or arbitrary command execution.
+     */
+    if (req.method === 'POST' && pathname === '/actions/local') {
+      if (!isAllowedOrigin(origin, allowAnyExtension)) {
+        sendJson(403, { success: false, error: 'origin_forbidden' });
+        return;
+      }
+
+      const clientSecret = req.headers['x-bridge-secret'];
+      if (!secretStore.verifySecret(clientSecret as string | undefined)) {
+        sendJson(401, { success: false, error: 'unauthorized' });
+        return;
+      }
+
+      let body = '';
+      req.on('data', (chunk) => {
+        body += chunk;
+      });
+
+      req.on('end', async () => {
+        try {
+          const parsed = JSON.parse(body);
+          const action = parsed?.action as LocalProjectAction;
+          if (!action || !LOCAL_PROJECT_ACTIONS.includes(action)) {
+            sendJson(400, { success: false, error: 'invalid_action' });
+            return;
+          }
+
+          const currentProject = contextChannels.get('project')?.payload as ProjectContext | null;
+          if (!currentProject) {
+            sendJson(400, { success: false, error: 'no_project_context' });
+            return;
+          }
+
+          if (!currentProject.localRepoPath) {
+            sendJson(400, { success: false, error: 'no_local_repo_path' });
+            return;
+          }
+
+          const result = await executeLocalProjectAction(action, currentProject.localRepoPath);
+          if (!result.success) {
+            sendJson(400, result);
+            return;
+          }
+
+          sendJson(200, result);
+        } catch (e) {
+          sendJson(400, { success: false, error: 'invalid_json' });
+        }
       });
       return;
     }

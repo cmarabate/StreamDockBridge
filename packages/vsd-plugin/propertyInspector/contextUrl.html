@@ -217,7 +217,19 @@
     </div>
 
     <script>
-      var PLACEHOLDERS = ['title', 'rawTitle', 'url', 'hostname'];
+      var PLACEHOLDERS = [
+        'title',
+        'rawTitle',
+        'url',
+        'hostname',
+        'projectName',
+        'githubOwner',
+        'githubRepo',
+        'vercelTeam',
+        'vercelProject',
+        'supabaseProjectRef',
+        'projectDomain',
+      ];
 
       /**
        * Mirrors CONTEXT_URL_PRESETS in the service. A preset is only sugar:
@@ -242,8 +254,18 @@
         { id: "search-page-title", label: "Google this page title", group: "This page", urlTemplate: "https://www.google.com/search?q={rawTitle}" },
         { id: "reddit-page-title", label: "Reddit this page title", group: "This page", urlTemplate: "https://www.reddit.com/search/?q={rawTitle}" },
         { id: "youtube-page-title", label: "YouTube this page title", group: "This page", urlTemplate: "https://www.youtube.com/results?search_query={rawTitle}" },
+        { id: "github-repo", label: "GitHub Repository", group: "Project", urlTemplate: "https://github.com/{githubOwner}/{githubRepo}" },
+        { id: "github-prs", label: "GitHub Pull Requests", group: "Project", urlTemplate: "https://github.com/{githubOwner}/{githubRepo}/pulls" },
+        { id: "github-issues", label: "GitHub Issues", group: "Project", urlTemplate: "https://github.com/{githubOwner}/{githubRepo}/issues" },
+        { id: "github-actions", label: "GitHub Actions", group: "Project", urlTemplate: "https://github.com/{githubOwner}/{githubRepo}/actions" },
+        { id: "vercel-project", label: "Vercel Project", group: "Project", urlTemplate: "https://vercel.com/{vercelTeam}/{vercelProject}" },
+        { id: "vercel-deployments", label: "Vercel Deployments", group: "Project", urlTemplate: "https://vercel.com/{vercelTeam}/{vercelProject}/deployments" },
+        { id: "supabase-project", label: "Supabase Project", group: "Project", urlTemplate: "https://supabase.com/dashboard/project/{supabaseProjectRef}" },
+        { id: "supabase-sql", label: "Supabase SQL", group: "Project", urlTemplate: "https://supabase.com/dashboard/project/{supabaseProjectRef}/sql" },
+        { id: "supabase-logs", label: "Supabase Logs", group: "Project", urlTemplate: "https://supabase.com/dashboard/project/{supabaseProjectRef}/logs/explorer" },
+        { id: "project-production", label: "Production Website", group: "Project", urlTemplate: "https://{projectDomain}" },
       ];
-      var PRESET_GROUPS = ['Media', 'This page'];
+      var PRESET_GROUPS = ['Media', 'This page', 'Project'];
 
       var websocket = null;
       var pluginUUID = null;
@@ -535,7 +557,13 @@
         userEdited = true;
         input.value = preset.urlTemplate;
         // A preset knows which context it is about, so selecting one sets it.
-        contextModeEl.value = preset.group === 'This page' ? 'page' : 'media';
+        if (preset.group === 'This page') {
+          contextModeEl.value = 'page';
+        } else if (preset.group === 'Project') {
+          contextModeEl.value = 'project';
+        } else {
+          contextModeEl.value = 'media';
+        }
         validate();
         renderLocalState();
         clearTimeout(saveTimer);

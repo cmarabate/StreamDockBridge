@@ -95,8 +95,41 @@ describe('placeholder substitution', () => {
     expect(ok('http://127.0.0.1:8080/panel')).toBe('http://127.0.0.1:8080/panel');
   });
 
-  it('exposes exactly the four approved placeholders', () => {
-    expect([...PLACEHOLDERS].sort()).toEqual(['hostname', 'rawTitle', 'title', 'url']);
+  it('exposes exactly the approved placeholders', () => {
+    expect([...PLACEHOLDERS].sort()).toEqual([
+      'githubOwner',
+      'githubRepo',
+      'hostname',
+      'projectDomain',
+      'projectName',
+      'rawTitle',
+      'supabaseProjectRef',
+      'title',
+      'url',
+      'vercelProject',
+      'vercelTeam',
+    ]);
+  });
+
+  it('substitutes project placeholders correctly', () => {
+    const projectValues: PlaceholderValues = {
+      projectName: 'ADHDeploy',
+      githubOwner: 'cmarabate',
+      githubRepo: 'adhdeploy',
+      vercelTeam: 'team_abc',
+      vercelProject: 'adhdeploy',
+      supabaseProjectRef: 'workspace',
+      projectDomain: 'adhdeploy.vercel.app',
+    };
+    expect(ok('https://github.com/{githubOwner}/{githubRepo}', projectValues)).toBe(
+      'https://github.com/cmarabate/adhdeploy'
+    );
+    expect(ok('https://vercel.com/{vercelTeam}/{vercelProject}', projectValues)).toBe(
+      'https://vercel.com/team_abc/adhdeploy'
+    );
+    expect(ok('https://{projectDomain}', projectValues)).toBe(
+      'https://adhdeploy.vercel.app/'
+    );
   });
 });
 
@@ -208,6 +241,13 @@ describe('placeholderValuesFrom', () => {
       rawTitle: 'Raw Title',
       url: 'https://example.com/watch',
       hostname: 'example.com',
+      projectName: '',
+      githubOwner: '',
+      githubRepo: '',
+      vercelTeam: '',
+      vercelProject: '',
+      supabaseProjectRef: '',
+      projectDomain: '',
     });
   });
 

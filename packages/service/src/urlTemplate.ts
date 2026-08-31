@@ -10,10 +10,33 @@ import { ContextRecord } from './contextStore';
  */
 
 /** Approved placeholders. Anything else is a configuration error, never a pass-through. */
-export const PLACEHOLDERS = ['title', 'rawTitle', 'url', 'hostname'] as const;
+export const PLACEHOLDERS = [
+  'title',
+  'rawTitle',
+  'url',
+  'hostname',
+  'projectName',
+  'githubOwner',
+  'githubRepo',
+  'vercelTeam',
+  'vercelProject',
+  'supabaseProjectRef',
+  'projectDomain',
+] as const;
 export type PlaceholderName = (typeof PLACEHOLDERS)[number];
 
-export type PlaceholderValues = Record<PlaceholderName, string>;
+export type PlaceholderValues = Partial<Record<PlaceholderName, string>>;
+
+export interface ProjectInfoLike {
+  projectName?: string;
+  githubOwner?: string | null;
+  githubRepoName?: string | null;
+  githubRepo?: string | null;
+  vercelTeam?: string;
+  vercelProject?: string;
+  supabaseProjectRef?: string;
+  projectDomain?: string;
+}
 
 /** Templates come from user configuration, but bound the work regardless. */
 export const MAX_TEMPLATE_LENGTH = 2000;
@@ -41,16 +64,36 @@ function fail(error: string, status = 400): TemplateFailure {
 }
 
 /**
- * The values a template may reference, taken from the service's own browser
+ * The values a template may reference, taken from the service's browser or project
  * context. Deliberately a projection rather than the whole record, so adding a
  * field to ContextRecord cannot silently widen what a template can read.
  */
-export function placeholderValuesFrom(context: ContextRecord): PlaceholderValues {
+export function placeholderValuesFrom(
+  context?: ContextRecord | null,
+  project?: ProjectInfoLike | null
+): PlaceholderValues {
+  let githubOwner = project?.githubOwner || '';
+  let githubRepo = project?.githubRepoName || '';
+  if (!githubOwner && !githubRepo && project?.githubRepo) {
+    const parts = project.githubRepo.split('/');
+    if (parts.length === 2) {
+      githubOwner = parts[0];
+      githubRepo = parts[1];
+    }
+  }
+
   return {
-    title: context.canonicalTitle || '',
-    rawTitle: context.rawTitle || '',
-    url: context.url || '',
-    hostname: context.hostname || '',
+    title: context?.canonicalTitle || '',
+    rawTitle: context?.rawTitle || '',
+    url: context?.url || '',
+    hostname: context?.hostname || '',
+    projectName: project?.projectName || '',
+    githubOwner: githubOwner || '',
+    githubRepo: githubRepo || '',
+    vercelTeam: project?.vercelTeam || '',
+    vercelProject: project?.vercelProject || '',
+    supabaseProjectRef: project?.supabaseProjectRef || '',
+    projectDomain: project?.projectDomain || '',
   };
 }
 

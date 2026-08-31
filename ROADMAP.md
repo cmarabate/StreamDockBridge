@@ -869,64 +869,64 @@ media *search* has no such guard, which is exactly why it must never fall back.
 
 **Status: `VERIFIED AUTOMATED` + `VERIFIED RUNTIME` / `WAITING OWNER PHYSICAL RETEST`.**
 
-### Project-aware Context URL — `INVESTIGATION` (complete) / `BLOCKED` on current-project detection
+### Project-aware Context URL & Closed Local Actions — `DONE` / `VERIFIED AUTOMATED` + `VERIFIED RUNTIME`
 
-The goal: the same physical GITHUB / VERCEL / SUPABASE keys open whichever project the
-owner is currently working in, without one key per project. Research is done and the
-architecture is settled. **It is not implemented, and one piece is genuinely missing.**
+**The goal:** The same physical GITHUB / VERCEL / SUPABASE keys and local actions (Terminal, Folder, VS Code, Copy Path) open whichever project the owner is currently working in, without one key per project.
 
-**Project identity belongs to AgentOS, and StreamDockBridge must not duplicate it.**
-`D:\_Dev\Apps\AgentOS\.agent-os\state\project-registry.json` (schema
-`project-registry-state-1`, 22 entries) is the canonical catalog. Each entry carries
-`registryKey` (the canonical id — the `id` UUID is explicitly provenance, *not* identity),
-`name`, `aliases`, `localRepoPath`, `githubRepo` as `owner/repo`, and `repoLess`. Access is
-by file read or the read-only CLI `aos:project-registry:read --state <path> --json`;
-nothing is served over a socket, and neither running AgentOS server (4799, 8787) exposes
-project identity at all.
+**1. Live ChatGPT Project & Work Page Extraction Contract:**
+Live inspection established durable project signals from Chrome `WORK_BROWSER` pages:
+- **ChatGPT Project URLs**: `https://(chatgpt.com|chat.openai.com)/g/g-p-<projectId>-<slug>(/c/<convId>)?` extracts stable `slug` (e.g. `oasis-culture-lounge`, `adhdeploy`, `ideaforge`).
+- **ChatGPT Page Titles**: `"<Project Name> - <Conversation Title>"` or `"ChatGPT - <Project Name>"` (e.g. `"Oasis Culture Lounge - Reconcile StoryForge..."`).
+- **GitHub URLs**: `https://github.com/<owner>/<repo>(/.*)?` extracts canonical `<owner>/<repo>`.
+- **Vercel URLs**: `https://vercel.com/<team>/<project>(/.*)?`.
+- **Related Domains**: Exact hostname matches against configured project domains.
+- **Fail-Closed**: Generic or ambiguous pages (e.g. `google.com`, unrelated ChatGPT chats) evaluate to `project = null`.
 
-Crucially, the registry **already models the ChatGPT link**: IdeaForge's entry carries
-`aliases: ["ChatGPT: IdeaForge"]`. The mapping from a ChatGPT Project name to a project is
-AgentOS's, not something to invent here.
+**2. AgentOS Canonical Mapping (Read-Only):**
+AgentOS remains the sole authority for project identity (`D:\_Dev\Apps\AgentOS\.agent-os\state\project-registry.json`, schema `project-registry-state-1`).
+StreamDockBridge reads the registry read-only and maps extracted page evidence via a deterministic priority hierarchy:
+1. `githubRepo` exact match (`owner/repo`)
+2. `registryKey` exact match (slug)
+3. `aliases` match (e.g. `"ChatGPT: GBC Lounge"` -> `gbc-lounge`)
+4. `name` slugified / exact match (`"Oasis Culture Lounge"`)
+5. Discovered project metadata / related domains
 
-**Web targets are NOT in AgentOS, by explicit doctrine.** The contract document lists what
-the registry may hold and states it is *identity metadata only*. There is no Vercel field,
-no Supabase field, no production URL: zero occurrences of `vercel` anywhere in AgentOS's
-source or state, and its single Supabase connection is AgentOS's own backend rather than
-per-project metadata. `relatedDomains: string[]` exists as the sanctioned extension point
-and is empty for all 22 entries.
+**3. Web Routing Metadata Discovery (Non-Secret):**
+- Safely extracts `.vercel/project.json` (`orgId`, `projectId`, `projectName`) from `localRepoPath` when present.
+- Never reads or exposes API keys, tokens, `.env` files, or database connection strings.
 
-So the split is:
+**4. Project Placeholders & Presets:**
+- **Placeholders added**: `{projectName}`, `{githubOwner}`, `{githubRepo}`, `{vercelTeam}`, `{vercelProject}`, `{supabaseProjectRef}`, `{projectDomain}`.
+- **Presets catalog**: Added `'Project'` group with verified templates for GitHub Repository, PRs, Issues, Actions, Vercel Project, Deployments, Supabase Project, SQL, Logs, and Production Website.
+- **Strict Isolation**: `contextMode: 'project'` strictly consumes `contexts.project`. Missing project context or empty placeholder returns `400 {"error":"no_project_context"}` / `no_usable_context` -> `showAlert` on deck, never falling back to Page or Media.
 
-- **identity** → read AgentOS (never duplicate it);
-- **web targets** → derive from the repo, because no canonical source exists:
-  `.vercel/project.json` gives `orgId`/`projectId`, a `SUPABASE_URL` subdomain gives the
-  project ref, `vercel.json`/`CNAME` hint at a production domain. Verified present across
-  the owner's projects — e.g. adhdeploy and shroommaps both have `.vercel/project.json`,
-  and the Vercel team is the same for all deployed projects.
+**5. Closed Local Project Actions:**
+- **Endpoint**: `POST /actions/local` (authenticated via `X-Bridge-Secret`).
+- **Allowed intents**: `OPEN_PROJECT_TERMINAL`, `OPEN_PROJECT_FOLDER`, `OPEN_PROJECT_IN_VSCODE`, `COPY_PROJECT_PATH`.
+- **Execution**: Direct binary execution via `child_process.spawn` (`wt.exe -d "<localRepoPath>"`, `explorer.exe "<localRepoPath>"`, `Code.exe "<localRepoPath>"`, PowerShell Set-Clipboard) without shell wrappers.
+- **Security**: Target path is strictly resolved from AgentOS `localRepoPath`, validated for directory existence, and cannot be supplied by browser content or arbitrary strings.
 
-**The blocker.** AgentOS is a **catalog, not a runtime focus tracker** — it can answer
-"what projects exist" and never "which project is the user in right now". Its
-`currentProjectId` is computed from roadmap slice ordering, not from the owner's activity.
-So the current-project signal has to come from the browser, and the only proposed source is
-the ChatGPT Project a conversation belongs to.
+**6. Two-Project Runtime Proof:**
+- **Project A (`adhdeploy`)**: ChatGPT slug `adhdeploy` resolved to `cmarabate/adhdeploy` repo, Vercel team `team_9K2ORMlOEDhQq5G6KEWV4gHv`, and local path `D:\_Dev\Apps\adhdeploy`.
+  - GitHub action opened `https://github.com/cmarabate/adhdeploy`.
+  - Vercel action opened `https://vercel.com/team_9K2ORMlOEDhQq5G6KEWV4gHv/adhdeploy`.
+  - Terminal action launched `wt.exe -d "D:\_Dev\Apps\adhdeploy"`.
+- **Project B (`gbc-lounge` / Oasis Culture Lounge)**: ChatGPT slug `oasis-culture-lounge` resolved to `cmarabate/gbclounge.com` repo and local path `D:\_Dev\Websites\gbclounge.com`.
+  - GitHub action opened `https://github.com/cmarabate/gbclounge.com`.
+  - Terminal action launched `wt.exe -d "D:\_Dev\Websites\gbclounge.com"`.
+- **Unrelated page (`google.com`)**: Returned `400 {"error":"no_project_context"}` and launched nothing.
+- **Media independence**: Brave `MEDIA_BROWSER` remained on `Regular Show` throughout without cross-channel leakage.
 
-**That extraction contract is unproven.** Establishing it needs live inspection of a
-logged-in ChatGPT Project page to find a stable identifier — URL, a durable data attribute,
-or accessible DOM — that is not a transient CSS class and not merely a thread title that
-happens to mention a project name. That inspection was not performed: it requires driving
-the owner's authenticated browser session, and the workstation was in active use.
+**7. Windows Terminal & Copy Last Output Research:**
+- Windows Terminal (`wt.exe`) installed at `%LOCALAPPDATA%\Microsoft\WindowsApps\wt.exe`.
+- Supports native OSC 133 semantic marks (`133;A` prompt start, `133;B` command start, `133;C` output start, `133;D` exit code) and `copyLastOutput` action.
+- Native clipboard copy of last command output requires terminal pane focus.
 
-**Nothing was implemented on guesswork.** No project placeholders, no project presets, no
-project keys. Implementing `{githubOwner}` and friends before the current-project signal is
-proven would produce keys that silently open the wrong project's repository, which is worse
-than not having them. Two further design decisions are already settled for when it
-unblocks: a missing association must `showAlert` rather than substitute empty text, and
-project context must carry no keys, tokens or connection strings — only public dashboard
-identifiers.
+**8. WatchDirector Archaeology:**
+- Located read-only at `D:\_Dev\Apps\watchdirector` (Node.js 22.6 + SQLite ledger).
+- Splitting responsibility: StreamDockBridge owns raw playback observation, browser tab arbitration, and Deck routing; WatchDirector owns personal media catalog, watch history, and recommendations. No WatchDirector mutation performed.
 
-**Also noted:** StreamDockBridge is absent from both AgentOS registries and has no
-`.vercel/`, `supabase/`, `.env` or `.agent-os/` of its own, so it would need registering
-before it could resolve as a project.
+**Status: `VERIFIED AUTOMATED` + `VERIFIED RUNTIME`.**
 
 ### Phase 2B — AgentOS Safe Hardware-Action Contract — `PLANNED` (design agreed, not implemented)
 

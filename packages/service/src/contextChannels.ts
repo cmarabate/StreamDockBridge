@@ -87,10 +87,16 @@ export interface ProjectContext {
   /** AgentOS registryKey when identity resolved, else null. */
   projectKey: string | null;
   projectName: string;
+  localRepoPath?: string | null;
+  githubRepo?: string | null;
+  githubOwner?: string | null;
+  githubRepoName?: string | null;
+  vercelTeam?: string;
+  vercelProject?: string;
+  supabaseProjectRef?: string;
+  projectDomain?: string;
   /** What proved it, e.g. 'chatgpt-project' or 'github-url'. */
   evidence: string;
-  githubOwner?: string;
-  githubRepo?: string;
 }
 
 /** The payload a channel carries. Media and page carry a page record. */

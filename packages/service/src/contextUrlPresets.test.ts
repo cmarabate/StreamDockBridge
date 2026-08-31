@@ -8,7 +8,7 @@ import {
   placeholdersUsedBy,
   ContextUrlPreset,
 } from './contextUrlPresets';
-import { resolveUrlTemplate, PlaceholderValues } from './urlTemplate';
+import { resolveUrlTemplate, PlaceholderValues, PLACEHOLDERS } from './urlTemplate';
 import { deriveSiteOrigin } from './siteIcon';
 
 const CONTEXT: PlaceholderValues = {
@@ -16,6 +16,13 @@ const CONTEXT: PlaceholderValues = {
   rawTitle: 'Watch Gary and His Demons Season 2 | Prime Video',
   url: 'https://www.amazon.com/gp/video/detail/X',
   hostname: 'www.amazon.com',
+  projectName: 'ADHDeploy',
+  githubOwner: 'cmarabate',
+  githubRepo: 'adhdeploy',
+  vercelTeam: 'team_123',
+  vercelProject: 'adhdeploy',
+  supabaseProjectRef: 'workspace',
+  projectDomain: 'adhdeploy.vercel.app',
 };
 
 const PI_PATH = path.resolve(
@@ -51,21 +58,29 @@ describe('the preset catalog', () => {
   );
 
   /** Auto Website Icon has to be able to name the site a preset points at. */
-  it.each(CONTEXT_URL_PRESETS.map((p): [string, ContextUrlPreset] => [p.label, p]))(
-    'derives a static icon origin for %s',
-    (_label, preset) => {
-      const derived = deriveSiteOrigin(preset.urlTemplate);
-      expect(derived.ok).toBe(true);
-      if (derived.ok) expect(derived.site.hostname).toMatch(/\./);
-    }
-  );
+  it.each(
+    CONTEXT_URL_PRESETS.filter((p) => !p.urlTemplate.includes('{projectDomain}')).map(
+      (p): [string, ContextUrlPreset] => [p.label, p]
+    )
+  )('derives a static icon origin for %s', (_label, preset) => {
+    const derived = deriveSiteOrigin(preset.urlTemplate);
+    expect(derived.ok).toBe(true);
+    if (derived.ok) expect(derived.site.hostname).toMatch(/\./);
+  });
+
+  it('recognizes dynamic host presets as dynamic', () => {
+    const prodPreset = CONTEXT_URL_PRESETS.find((p) => p.id === 'project-production');
+    expect(prodPreset).toBeDefined();
+    const derived = deriveSiteOrigin(prodPreset!.urlTemplate);
+    expect(derived).toEqual({ ok: false, reason: 'dynamic_host' });
+  });
 
   it('uses only approved placeholders', () => {
     for (const preset of CONTEXT_URL_PRESETS) {
       const used = placeholdersUsedBy(preset);
       expect(used.length).toBeGreaterThan(0);
       for (const name of used) {
-        expect(['title', 'rawTitle', 'url', 'hostname']).toContain(name);
+        expect(PLACEHOLDERS).toContain(name);
       }
     }
   });

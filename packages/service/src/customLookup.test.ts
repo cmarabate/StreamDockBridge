@@ -193,6 +193,108 @@ describe('POST /lookup/custom', () => {
     expect(res.data.resolvedUrl).toBe('https://example.com/dashboard');
   });
 
+  it('resolves project templates against the project channel', async () => {
+    const simSource = {
+      browserInstanceId: 'chrome-work',
+      browserFamily: 'chrome',
+      displayName: 'Chrome',
+      mode: 'WORK_BROWSER' as const,
+      connectionGeneration: 1,
+    };
+
+    // Post page observation that maps to ADHDeploy
+    await request('/context', authed(), {
+      source: simSource,
+      channel: 'page',
+      sequenceId: 1,
+      observedAt: Date.now(),
+      payload: {
+        url: 'https://github.com/cmarabate/adhdeploy',
+        rawTitle: 'cmarabate/adhdeploy: Automated Deploy Tool',
+        tabId: 10,
+        windowId: 1,
+      },
+    });
+
+    const res = await custom('https://github.com/{githubOwner}/{githubRepo}', {
+      contextMode: 'project',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.data.resolvedUrl).toBe('https://github.com/cmarabate/adhdeploy');
+    expect(launched).toEqual(['https://github.com/cmarabate/adhdeploy']);
+  });
+
+  it('fails closed when project channel is empty', async () => {
+    const simSource = {
+      browserInstanceId: 'chrome-work',
+      browserFamily: 'chrome',
+      displayName: 'Chrome',
+      mode: 'WORK_BROWSER' as const,
+      connectionGeneration: 1,
+    };
+
+    // Post unrelated page
+    await request('/context', authed(), {
+      source: simSource,
+      channel: 'page',
+      sequenceId: 2,
+      observedAt: Date.now(),
+      payload: {
+        url: 'https://news.ycombinator.com',
+        rawTitle: 'Hacker News',
+        tabId: 10,
+        windowId: 1,
+      },
+    });
+
+    const res = await custom('https://github.com/{githubOwner}/{githubRepo}', {
+      contextMode: 'project',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.data.error).toBe('no_project_context');
+  });
+
+  it('executes closed local action on active project', async () => {
+    const simSource = {
+      browserInstanceId: 'chrome-work',
+      browserFamily: 'chrome',
+      displayName: 'Chrome',
+      mode: 'WORK_BROWSER' as const,
+      connectionGeneration: 1,
+    };
+
+    await request('/context', authed(), {
+      source: simSource,
+      channel: 'page',
+      sequenceId: 3,
+      observedAt: Date.now(),
+      payload: {
+        url: 'https://github.com/cmarabate/adhdeploy',
+        rawTitle: 'cmarabate/adhdeploy',
+        tabId: 10,
+        windowId: 1,
+      },
+    });
+
+    const res = await request('/actions/local', authed(), {
+      action: 'OPEN_PROJECT_FOLDER',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.data.success).toBe(true);
+    expect(res.data.action).toBe('OPEN_PROJECT_FOLDER');
+  });
+
+  it('rejects unapproved local actions', async () => {
+    const res = await request('/actions/local', authed(), {
+      action: 'RUN_ARBITRARY_SCRIPT',
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.data.error).toBe('invalid_action');
+  });
+
   it('does not accept GET', async () => {
     contextStore.updateContext(PRIME_VIDEO);
     const res = await new Promise<number>((resolve, reject) => {

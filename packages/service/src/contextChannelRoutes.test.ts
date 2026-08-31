@@ -253,13 +253,13 @@ describe('contextMode on a Context URL key', () => {
     expect(res.json.resolvedUrl).toBe('https://www.google.com/search?q=github.com');
   });
 
-  it('refuses a project template rather than opening the wrong thing', async () => {
+  it('refuses a project template when no project is recognized', async () => {
     const res = await authed('POST', '/lookup/custom', {
-      template: 'https://github.com/{title}',
+      template: 'https://github.com/{githubOwner}/{githubRepo}',
       contextMode: 'project',
     });
     expect(res.status).toBe(400);
-    expect(res.json.error).toBe('project_context_unsupported');
+    expect(res.json.error).toBe('no_project_context');
     expect(launched).toHaveLength(0);
   });
 });
