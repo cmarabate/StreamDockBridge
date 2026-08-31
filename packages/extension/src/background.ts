@@ -425,11 +425,13 @@ export async function syncActiveContext(retryCount = 0) {
      * switching a browser to Media later does not start from an empty set.
      */
     /**
-     * Only a real answer changes eligibility. The fallback meta built above
-     * when the content script does not reply carries no media evidence, and
-     * treating that as "not media" is what removed a playing tab from the set.
+     * Only a real answer changes eligibility, and hasVideo being present is
+     * what proves the content script actually replied — it is always set, true
+     * or false, precisely so silence and "not media" stay distinguishable.
+     * A real answer must be able to DEMOTE a tab, or a media tab that navigates
+     * to a work page keeps publishing that page's title as media.
      */
-    if (meta.ogType || meta.jsonLdType || meta.hasVideo !== undefined) {
+    if (meta.hasVideo !== undefined) {
       mediaTabs.noteEvidence(tabId, tabWindowId, tabUrl, looksLikeMedia(meta));
     }
 
@@ -617,7 +619,30 @@ function requestMetadata(tabId: number): Promise<PageMetadata | null> {
  * Only ever ADDS candidates. A tab that does not answer is left out of this
  * pass rather than being recorded as not-media, because silence is ignorance.
  */
-export async function rebuildMediaTabs(): Promise<void> {
+/**
+ * Guards against a rebuild storm.
+ *
+ * Both alarm callbacks can reach publishMedia, and in a media browser with
+ * nothing playing each pass would scan every tab — twice, every thirty seconds,
+ * forever. One scan at a time, and not more often than this.
+ */
+let rebuildInFlight: Promise<void> | null = null;
+let lastRebuildAt = 0;
+export const REBUILD_MIN_INTERVAL_MS = 15_000;
+
+export async function rebuildMediaTabs(force = false): Promise<void> {
+  if (rebuildInFlight) return rebuildInFlight;
+  const now = Date.now();
+  if (!force && now - lastRebuildAt < REBUILD_MIN_INTERVAL_MS) return;
+  lastRebuildAt = now;
+
+  rebuildInFlight = runRebuild().finally(() => {
+    rebuildInFlight = null;
+  });
+  return rebuildInFlight;
+}
+
+async function runRebuild(): Promise<void> {
   if (typeof chrome === 'undefined' || !chrome.tabs) return;
 
   const tabs = await new Promise<chrome.tabs.Tab[]>((resolve) => {
@@ -632,22 +657,36 @@ export async function rebuildMediaTabs(): Promise<void> {
     }
   });
 
-  // Bounded: a browser with hundreds of tabs must not turn this into a storm.
+  /**
+   * Bounded, but not by tab position.
+   *
+   * Taking the first 40 tabs in query order means a media tab sitting at index
+   * 45 is invisible forever, and the leftmost tab with any <video> wins. Active
+   * tabs are scanned first because they are what the user chose, then the rest.
+   */
   const candidates = tabs.filter((t) => typeof t.id === 'number' && /^https?:/.test(t.url || ''));
-  const scanned = candidates.slice(0, 40);
+  const scanned = [
+    ...candidates.filter((t) => t.active),
+    ...candidates.filter((t) => !t.active),
+  ].slice(0, 40);
 
   const results = await Promise.all(
     scanned.map(async (tab) => ({ tab, meta: await requestMetadata(tab.id as number) }))
   );
 
-  for (const { tab, meta } of results) {
-    if (!meta) continue; // no answer is not a negative answer
-    if (!looksLikeMedia(meta)) continue;
-    /**
-     * Recorded as evidence rather than activation, so a rebuild never invents
-     * an activation order. The active tab keeps its natural precedence because
-     * a real activation always outranks these.
-     */
+  /**
+   * Recorded as evidence rather than activation, so a rebuild never invents an
+   * activation order and a real activation always outranks it.
+   *
+   * Every rebuilt entry shares the same order, and `current()` breaks that tie
+   * by FIRST insertion, so the active tab is recorded first. Without this the
+   * leftmost tab holding any <video> would become the media owner after a
+   * worker restart.
+   */
+  const found = results.filter((r) => r.meta && looksLikeMedia(r.meta));
+  const ordered = [...found.filter((r) => r.tab.active), ...found.filter((r) => !r.tab.active)];
+
+  for (const { tab } of ordered) {
     mediaTabs.noteEvidence(tab.id as number, tab.windowId ?? 0, tab.url || '', true);
   }
 }

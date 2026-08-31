@@ -407,8 +407,9 @@ describe('two sources competing for one channel', () => {
    */
   it('gives the channel to the more recent user activity', () => {
     const store = new ContextChannelStore();
-    const a = source('aaa', 'HYBRID');
-    const b = source('bbb', 'HYBRID');
+    // Both dedicated: recency is the tie-break only between equals.
+    const a = source('aaa', 'MEDIA_BROWSER');
+    const b = source('bbb', 'MEDIA_BROWSER');
 
     store.observe(observation(a, 'media', record('Older'), { observedAt: 5000 }));
     expect(
@@ -425,16 +426,53 @@ describe('two sources competing for one channel', () => {
 
   it('breaks an exact tie deterministically rather than by arrival order', () => {
     const first = new ContextChannelStore();
-    first.observe(observation(source('aaa', 'HYBRID'), 'media', record('A'), { observedAt: 5000 }));
-    first.observe(observation(source('bbb', 'HYBRID'), 'media', record('B'), { observedAt: 5000 }));
+    first.observe(
+      observation(source('aaa', 'MEDIA_BROWSER'), 'media', record('A'), { observedAt: 5000 })
+    );
+    first.observe(
+      observation(source('bbb', 'MEDIA_BROWSER'), 'media', record('B'), { observedAt: 5000 })
+    );
 
     // Same two claims, opposite arrival order.
     const second = new ContextChannelStore();
-    second.observe(observation(source('bbb', 'HYBRID'), 'media', record('B'), { observedAt: 5000 }));
-    second.observe(observation(source('aaa', 'HYBRID'), 'media', record('A'), { observedAt: 5000 }));
+    second.observe(
+      observation(source('bbb', 'MEDIA_BROWSER'), 'media', record('B'), { observedAt: 5000 })
+    );
+    second.observe(
+      observation(source('aaa', 'MEDIA_BROWSER'), 'media', record('A'), { observedAt: 5000 })
+    );
 
     expect(first.get('media')!.browserInstanceId).toBe('bbb');
     expect(second.get('media')!.browserInstanceId).toBe('bbb');
+  });
+
+  /**
+   * Two browsers on the default HYBRID: neither has been assigned the channel,
+   * so whoever claimed it keeps it until they release it or go quiet. Recency
+   * here would mean a second browser opening any page with a video seizes media
+   * from the one actually playing — the original defect in another guise.
+   */
+  it('does not let one general browser take a live channel from another', () => {
+    const store = new ContextChannelStore();
+    store.observe(
+      observation(source('aaa', 'HYBRID'), 'media', record('Playing'), { observedAt: 5000 })
+    );
+
+    const stolen = store.observe(
+      observation(source('bbb', 'HYBRID'), 'media', record('Some video ad'), { observedAt: 9000 })
+    );
+
+    expect(stolen).toEqual({ accepted: false, reason: 'lost_arbitration' });
+    expect(store.getRecord('media')!.canonicalTitle).toBe('Playing');
+  });
+
+  /** But a general browser may still CLAIM a channel nobody holds. */
+  it('lets a general browser claim a free channel', () => {
+    const store = new ContextChannelStore();
+    expect(
+      store.observe(observation(source('aaa', 'HYBRID'), 'media', record('Only browser')))
+    ).toMatchObject({ accepted: true });
+    expect(store.getRecord('media')!.canonicalTitle).toBe('Only browser');
   });
 
   it('lets a live source take a channel from one that has gone silent', () => {

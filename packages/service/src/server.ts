@@ -425,11 +425,28 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
       });
       req.on('end', () => {
         try {
-          const source = readSourceIdentity(JSON.parse(body)?.source);
+          const raw = JSON.parse(body)?.source;
+          const source = readSourceIdentity(raw);
           if (!source) {
             sendJson(400, { success: false, error: 'missing_source' });
             return;
           }
+
+          /**
+           * A heartbeat must ASSERT its mode, never default it.
+           *
+           * readSourceIdentity falls back to DISABLED for an absent or invalid
+           * mode, and registering as DISABLED releases every channel this
+           * browser owns. A ping that says "still here" must not be able to
+           * destroy the state it is keeping alive, so an unstated mode is a
+           * bad request rather than a silent shutdown.
+           */
+          const statedMode = raw && typeof raw === 'object' ? (raw as any).mode : undefined;
+          if (!BROWSER_MODES.includes(statedMode)) {
+            sendJson(400, { success: false, error: 'missing_mode' });
+            return;
+          }
+
           const accepted = contextChannels.registerSource(source);
           // Tell the browser whether the service still holds its channels, so a
           // restart is noticed without a second round trip.
@@ -729,9 +746,23 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
         return;
       }
 
-      // Only the URL matters here, so read the record directly rather than
-      // through getContext(), which also demands a derivable title.
-      const current = contextStore.getCurrentRecord();
+      /**
+       * Media first, then the page — and this is the one action where looking
+       * at a second channel is right rather than dangerous.
+       *
+       * A media SEARCH must never fall back, because any page title is a
+       * plausible-looking search term and the owner gets a silently wrong
+       * result. Transcription cannot fail that way: the URL has to pass
+       * isSupportedTranscriptionUrl, so a Supabase admin page is refused
+       * outright rather than transcribed. That guard is what makes the second
+       * look safe, and without it a video open in the work browser would not
+       * be transcribable at all.
+       *
+       * Only the URL matters, so the record is read directly rather than
+       * through getContext(), which also demands a derivable title.
+       */
+      const current =
+        contextChannels.getRecord('media') ?? contextChannels.getRecord('page');
       if (!current || !current.url) {
         sendJson(400, { success: false, error: 'no_usable_context' });
         return;

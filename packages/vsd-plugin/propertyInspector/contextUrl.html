@@ -511,8 +511,6 @@
       input.addEventListener('input', function () {
         userEdited = true;
         presetEl.value = presetIdForTemplate(input.value);
-        contextModeEl.value =
-          typeof settings.contextMode === 'string' ? settings.contextMode : 'auto';
         validate();
         renderLocalState();
         clearTimeout(saveTimer);
@@ -570,6 +568,14 @@
         // Absent means ON: the setting is opt-out, so existing keys inherit it.
         autoIconEl.checked = settings.autoWebsiteIcon !== false;
         presetEl.value = presetIdForTemplate(input.value);
+        /**
+         * Restored here, where the panel is populated. Without it the dropdown
+         * showed Auto for a key saved as page, and the next save — a Refresh
+         * Icon click was enough — wrote that lie back, silently turning a page
+         * key into a media one.
+         */
+        contextModeEl.value =
+          typeof settings.contextMode === 'string' ? settings.contextMode : 'auto';
         if (input.value) validate();
         else setStatus('');
         lastSite = null;

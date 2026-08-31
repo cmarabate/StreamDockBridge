@@ -158,6 +158,17 @@ export function extractPageMetadata(doc: Document): PageMetadata {
      * a known duration keeps an autoplaying advert banner from making an
      * ordinary page look like something the owner is watching.
      */
+    /**
+     * ALWAYS set, true or false.
+     *
+     * This field is what distinguishes "the page answered and it is not media"
+     * from "the content script never answered". Leaving it undefined on an
+     * ordinary page made those two cases byte-identical, so a media tab that
+     * navigated to a work page was never demoted — and the media channel then
+     * carried that page's title. That is the failure this whole slice repairs,
+     * reappearing inside the channel where isolation cannot help.
+     */
+    meta.hasVideo = false;
     try {
       const videos = doc.querySelectorAll('video');
       for (let v = 0; v < videos.length; v++) {

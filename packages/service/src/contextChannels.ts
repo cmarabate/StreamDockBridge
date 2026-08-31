@@ -259,7 +259,20 @@ export class ContextChannelStore {
     const ownerDedicated = isDedicatedTo(owner.mode, observation.channel);
     if (challengerDedicated !== ownerDedicated) return challengerDedicated;
 
-    // Between equals, the more recent user activity wins…
+    /**
+     * Neither is dedicated — both are on the default HYBRID, which publishes
+     * everything and is assigned to nothing.
+     *
+     * A general browser may CLAIM a free channel, which is what keeps a
+     * single-browser setup working, but it may not TAKE one from a live owner.
+     * Recency here would mean a second browser opening any page with a video
+     * seizes media from the one actually playing something, which is the
+     * original defect wearing a different hat. Whoever holds it keeps it until
+     * they release it or go quiet.
+     */
+    if (!challengerDedicated) return false;
+
+    // Between two dedicated browsers, the more recent user activity wins…
     if (observation.observedAt > current.observedAt) return true;
     if (observation.observedAt < current.observedAt) return false;
 
