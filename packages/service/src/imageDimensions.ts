@@ -67,9 +67,30 @@ export function jpegDimensions(body: Buffer): Dimensions | null {
 }
 
 /**
- * ICO: the directory bounds each entry to 256px, but an entry may hold a whole
- * PNG, whose IHDR can declare anything. The embedded image is what gets
- * decoded, so it is what must be judged.
+ * A Windows DIB header, as carried by a classic (non-PNG) ICO entry.
+ *
+ * `biHeight` is doubled for an icon because the DIB holds both the colour image
+ * and its AND mask stacked, so the real height is half. It may also be negative
+ * for a top-down bitmap.
+ */
+export function dibDimensions(body: Buffer): Dimensions | null {
+  if (body.length < 16) return null;
+  const headerSize = body.readUInt32LE(0);
+  // BITMAPINFOHEADER (40), BITMAPV4HEADER (108), BITMAPV5HEADER (124).
+  if (headerSize !== 40 && headerSize !== 108 && headerSize !== 124) return null;
+
+  const width = Math.abs(body.readInt32LE(4));
+  const storedHeight = Math.abs(body.readInt32LE(8));
+  if (width <= 0 || storedHeight <= 0) return null;
+
+  return { width, height: Math.ceil(storedHeight / 2) };
+}
+
+/**
+ * ICO: the directory bounds each entry to 256px, but that byte is only a hint.
+ * An entry may hold a whole PNG whose IHDR declares anything, or a raw DIB
+ * whose BITMAPINFOHEADER does. The payload is what a decoder sizes its
+ * allocation from, so the payload is what must be judged.
  */
 export function icoDimensions(body: Buffer): Dimensions | null {
   if (body.length < 6) return null;
@@ -90,12 +111,25 @@ export function icoDimensions(body: Buffer): Dimensions | null {
       // A PNG-compressed entry is decoded as a PNG, so read its real header.
       if (embedded.length >= 24 && embedded[0] === 0x89 && embedded.slice(1, 4).toString('ascii') === 'PNG') {
         dims = pngDimensions(embedded);
+      } else {
+        dims = dibDimensions(embedded);
       }
     }
 
+    /**
+     * The directory byte is a HINT; the payload header is what a decoder sizes
+     * its allocation from. Take whichever is larger, because an entry claiming
+     * 256x256 in the directory while its BITMAPINFOHEADER declares 30000x60000
+     * is exactly the file this check exists to refuse.
+     */
+    const declared = { width: body[entry] || 256, height: body[entry + 1] || 256 };
     if (!dims) {
-      // 0 means 256 in the ICO directory.
-      dims = { width: body[entry] || 256, height: body[entry + 1] || 256 };
+      dims = declared;
+    } else {
+      dims = {
+        width: Math.max(dims.width, declared.width),
+        height: Math.max(dims.height, declared.height),
+      };
     }
 
     if (!largest || dims.width * dims.height > largest.width * largest.height) largest = dims;

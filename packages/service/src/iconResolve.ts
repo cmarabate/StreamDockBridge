@@ -348,14 +348,27 @@ export async function resolveSiteIcon(origin: string, get: Getter = safeGet): Pr
     // The site may refuse the HTML fetch and still serve /favicon.ico.
   }
 
-  // Conventional fallbacks, ordered last by their undeclared-size score.
-  candidates.push({ href: '/apple-touch-icon.png', declaredSize: 0, source: 'fallback' });
-  candidates.push({ href: '/favicon.ico', declaredSize: 0, source: 'fallback' });
-
   const ordered: IconCandidate[] = [];
   for (const candidate of orderCandidates(candidates)) {
     const absolute = eligibleUrl(candidate.href, base);
     if (absolute) ordered.push({ ...candidate, href: absolute });
+  }
+
+  /**
+   * The conventional fallbacks resolve against the CONFIGURED origin, never the
+   * post-redirect URL.
+   *
+   * A trusted site with an open redirect would otherwise hand its key art to
+   * whoever the redirect lands on: `base` becomes the attacker's URL, and the
+   * icon fetched from there gets cached under the trusted origin for 14 days.
+   * A declared href is the site's own statement about itself and may still be
+   * cross-origin; a guessed path must not be.
+   */
+  for (const href of ['/apple-touch-icon.png', '/favicon.ico']) {
+    const absolute = eligibleUrl(href, origin);
+    if (absolute && !ordered.some((c) => c.href === absolute)) {
+      ordered.push({ href: absolute, declaredSize: 0, source: 'fallback' });
+    }
   }
   if (ordered.length === 0) return { ok: false, reason: 'no_candidates' };
 

@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>StreamDockBridge</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --fg: #1a1a1a;
+        --muted: #5f6368;
+        --border: #d5d7db;
+        --field: #f6f7f9;
+        --accent: #0b57d0;
+        --good: #1e8e3e;
+        --bad: #c5221f;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #202124;
+          --fg: #e8eaed;
+          --muted: #9aa0a6;
+          --border: #3c4043;
+          --field: #292a2d;
+          --accent: #8ab4f8;
+          --good: #81c995;
+          --bad: #f28b82;
+        }
+      }
+      body {
+        margin: 0;
+        padding: 28px;
+        background: var(--bg);
+        color: var(--fg);
+        font: 14px/1.55 system-ui, "Segoe UI", sans-serif;
+      }
+      main {
+        max-width: 620px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0 0 4px;
+      }
+      .sub {
+        color: var(--muted);
+        margin: 0 0 24px;
+      }
+      section {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 18px;
+        margin-bottom: 18px;
+      }
+      h2 {
+        font-size: 14px;
+        margin: 0 0 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--muted);
+      }
+      label.mode {
+        display: flex;
+        gap: 12px;
+        align-items: flex-start;
+        padding: 10px;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      label.mode:hover {
+        background: var(--field);
+      }
+      label.mode input {
+        margin-top: 3px;
+        accent-color: var(--accent);
+      }
+      .mode-name {
+        font-weight: 600;
+      }
+      .mode-why {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      input[type='text'] {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--field);
+        color: var(--fg);
+        font: inherit;
+      }
+      dl {
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 6px 16px;
+        margin: 0;
+      }
+      dt {
+        color: var(--muted);
+      }
+      dd {
+        margin: 0;
+        word-break: break-all;
+      }
+      .pill {
+        display: inline-block;
+        padding: 1px 8px;
+        border-radius: 999px;
+        font-size: 12px;
+        border: 1px solid var(--border);
+      }
+      .pill.on {
+        color: var(--good);
+        border-color: var(--good);
+      }
+      .pill.off {
+        color: var(--bad);
+        border-color: var(--bad);
+      }
+      .saved {
+        color: var(--good);
+        font-size: 13px;
+        min-height: 18px;
+      }
+      code {
+        background: var(--field);
+        padding: 1px 5px;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>StreamDockBridge</h1>
+      <p class="sub">
+        These settings belong to <strong>this browser profile only</strong>. Another browser
+        running the same extension keeps its own.
+      </p>
+
+      <section>
+        <h2>What is this browser for?</h2>
+        <div id="modes"></div>
+        <div class="saved" id="saved"></div>
+      </section>
+
+      <section>
+        <h2>Name</h2>
+        <input id="displayName" type="text" spellcheck="false" />
+        <p class="mode-why" style="margin-bottom: 0">
+          Shown when you inspect which browser is providing which context.
+        </p>
+      </section>
+
+      <section>
+        <h2>Status</h2>
+        <dl>
+          <dt>Service</dt>
+          <dd id="service">checking…</dd>
+          <dt>Publishing</dt>
+          <dd id="publishing">—</dd>
+          <dt>Media</dt>
+          <dd id="chMedia">—</dd>
+          <dt>Page</dt>
+          <dd id="chPage">—</dd>
+          <dt>Project</dt>
+          <dd id="chProject">—</dd>
+          <dt>Installation</dt>
+          <dd><code id="instanceId">—</code></dd>
+        </dl>
+      </section>
+    </main>
+    <script src="dist/options.js"></script>
+  </body>
+</html>

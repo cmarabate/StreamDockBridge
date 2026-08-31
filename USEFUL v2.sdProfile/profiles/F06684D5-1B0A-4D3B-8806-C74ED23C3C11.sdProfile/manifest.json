@@ -43,7 +43,10 @@
             "ActionID": "99f7511a-35c1-444a-9b02-7a243af7eb49",
             "Controller": "Keypad",
             "Name": "IMDb",
-            "Settings": {},
+            "Settings": {
+                "urlTemplate": "https://www.imdb.com/find?q={title}",
+                "autoWebsiteIcon": false
+            },
             "State": 0,
             "States": [
                 {
@@ -53,13 +56,16 @@
                     "TitleAlignment": "bottom"
                 }
             ],
-            "UUID": "com.cmarabate.streamdock.streamdockbridge.imdb"
+            "UUID": "com.cmarabate.streamdock.streamdockbridge.contexturl"
         },
         "3,1": {
             "ActionID": "71394053-f83d-47a6-9161-e4b09122774c",
             "Controller": "Keypad",
             "Name": "CAST",
-            "Settings": {},
+            "Settings": {
+                "urlTemplate": "https://www.google.com/search?q={title}%20cast",
+                "autoWebsiteIcon": false
+            },
             "State": 0,
             "States": [
                 {
@@ -69,13 +75,16 @@
                     "TitleAlignment": "bottom"
                 }
             ],
-            "UUID": "com.cmarabate.streamdock.streamdockbridge.cast"
+            "UUID": "com.cmarabate.streamdock.streamdockbridge.contexturl"
         },
         "4,1": {
             "ActionID": "4481faca-8655-4b9e-bcb7-77d1a3b4dcab",
             "Controller": "Keypad",
             "Name": "JUSTWATCH",
-            "Settings": {},
+            "Settings": {
+                "urlTemplate": "https://www.justwatch.com/us/search?q={title}",
+                "autoWebsiteIcon": false
+            },
             "State": 0,
             "States": [
                 {
@@ -85,13 +94,16 @@
                     "TitleAlignment": "bottom"
                 }
             ],
-            "UUID": "com.cmarabate.streamdock.streamdockbridge.justwatch"
+            "UUID": "com.cmarabate.streamdock.streamdockbridge.contexturl"
         },
         "0,2": {
             "ActionID": "438af019-6283-4406-a55c-1d27ee7210ff",
             "Controller": "Keypad",
             "Name": "REDDIT",
-            "Settings": {},
+            "Settings": {
+                "urlTemplate": "https://www.reddit.com/search/?q={title}",
+                "autoWebsiteIcon": false
+            },
             "State": 0,
             "States": [
                 {
@@ -101,7 +113,7 @@
                     "TitleAlignment": "bottom"
                 }
             ],
-            "UUID": "com.cmarabate.streamdock.streamdockbridge.reddit"
+            "UUID": "com.cmarabate.streamdock.streamdockbridge.contexturl"
         },
         "1,2": {
             "ActionID": "5c2f9d41-7a63-4b18-9e50-2b8d6f04a7c3",

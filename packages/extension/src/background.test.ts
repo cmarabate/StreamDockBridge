@@ -120,9 +120,27 @@ describe('Extension Background Unit Tests (Single Authority Rules A-G)', () => {
     lastFocusedCallback({ id: 100 });
     expect(bg.getFocusedWindowId()).toBe(100);
 
-    // Verify background never listens for runtime messages (no PAGE_CONTEXT_UPDATE handler)
+    /**
+     * The worker does listen for runtime messages now — the options page tells
+     * it the role changed. What must remain impossible is a CONTENT SCRIPT
+     * reaching context authority, so the listener ignores anything with a
+     * sender.tab, and ignores every action but its own.
+     */
     const onMessageCalls = (global as any).chrome.runtime.onMessage.addListener.mock.calls;
-    expect(onMessageCalls.length).toBe(0);
+    expect(onMessageCalls.length).toBe(1);
+    const handler = onMessageCalls[0][0];
+
+    const before = bg.getFocusedWindowId();
+    const postsBefore = mockFetch.mock.calls.length;
+
+    // A content script is identified by sender.tab and is refused outright.
+    handler({ action: 'ROLE_CHANGED' }, { tab: { id: 5 } });
+    handler({ action: 'PAGE_CONTEXT_UPDATE', url: 'https://evil.example' }, { tab: { id: 5 } });
+    // And an unknown action from anywhere does nothing either.
+    handler({ action: 'PAGE_CONTEXT_UPDATE', url: 'https://evil.example' }, {});
+
+    expect(bg.getFocusedWindowId()).toBe(before);
+    expect(mockFetch.mock.calls.length).toBe(postsBefore);
   });
 
   // TEST D: focused window change 100 -> 200 => only then does window 200 become authoritative

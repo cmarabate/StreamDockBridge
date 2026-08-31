@@ -6,6 +6,16 @@ export interface PageMetadata {
   jsonLdTitle?: string;
   /** Series this page belongs to, when the page says so structurally. */
   jsonLdSeriesTitle?: string;
+
+  /**
+   * Evidence that this page is something being WATCHED, used to decide whether
+   * a tab is eligible to own the media channel. Deliberately evidence rather
+   * than a host allowlist, which would need editing per service and would still
+   * miss a self-hosted player.
+   */
+  ogType?: string;
+  jsonLdType?: string;
+  hasVideo?: boolean;
 }
 
 const MEDIA_TYPES = [
@@ -137,6 +147,32 @@ export function extractPageMetadata(doc: Document): PageMetadata {
       if (content) meta.ogTitle = normalizeWhitespace(content);
     }
 
+    const ogTypeMeta = doc.querySelector('meta[property="og:type"]');
+    if (ogTypeMeta) {
+      const content = ogTypeMeta.getAttribute('content');
+      if (content) meta.ogType = normalizeWhitespace(content);
+    }
+
+    /**
+     * A real player element, not merely a decorative one. Requiring a source or
+     * a known duration keeps an autoplaying advert banner from making an
+     * ordinary page look like something the owner is watching.
+     */
+    try {
+      const videos = doc.querySelectorAll('video');
+      for (let v = 0; v < videos.length; v++) {
+        const video = videos[v] as HTMLVideoElement;
+        const hasSource = !!(video.currentSrc || video.src || video.querySelector('source'));
+        const hasDuration = typeof video.duration === 'number' && video.duration > 0;
+        if (hasSource || hasDuration) {
+          meta.hasVideo = true;
+          break;
+        }
+      }
+    } catch (e) {
+      // A document without a real video implementation is simply not media.
+    }
+
     const twitterMeta = doc.querySelector('meta[name="twitter:title"]');
     if (twitterMeta) {
       const content = twitterMeta.getAttribute('content');
@@ -172,6 +208,16 @@ export function extractPageMetadata(doc: Document): PageMetadata {
             if (usableTitle || series) {
               if (usableTitle) meta.jsonLdTitle = usableTitle;
               if (series) meta.jsonLdSeriesTitle = series;
+              /**
+               * The principal node's own type, recorded so media eligibility is
+               * decided from the same node the title came from rather than from
+               * some unrelated entry elsewhere in the graph.
+               */
+              if (!meta.jsonLdType) {
+                const rawType = item['@type'];
+                const firstType = Array.isArray(rawType) ? rawType[0] : rawType;
+                if (typeof firstType === 'string') meta.jsonLdType = firstType;
+              }
               break;
             }
           }

@@ -686,6 +686,80 @@ has not been exercised in the live Property Inspector — the workstation was in
 and the host window could not be driven reliably. Runtime and physical confirmation are
 outstanding.
 
+### Multi-browser context channels — `DONE` / `VERIFIED AUTOMATED` + `VERIFIED RUNTIME (service)` / `WAITING BROWSER + PHYSICAL TESTING`
+
+Brave publishes what is being watched; Chrome publishes what is being worked on. Neither
+can disturb the other.
+
+**What was there before.** One global `ContextRecord`, replaced wholesale by whoever posted
+last. The only guards were a timestamp comparison and an empty-title check — neither knows
+who sent anything. There was no browser identity in the payload, the record or the wire; no
+disconnect detection, TTL or heartbeat; and `tabId`/`windowId` were stored but never read.
+The extension's manifest pins its `key`, so Brave and Chrome present the **same** extension
+id and the same origin: the service could not tell them apart even in principle. Brave's
+media only appeared sticky because Brave stops posting when unfocused and nothing else
+overwrote it — adding Chrome breaks that immediately.
+
+**Channels.** `media`, `page` and `project` are independent, each with its own owner. An
+observation carries the installation id, a connection generation, a per-source sequence,
+tab/window and an observation time — enough to be judged rather than believed. A media
+observation cannot touch the page channel by construction.
+
+**Installation identity.** Each browser profile generates a `browserInstanceId` once and
+keeps it in `chrome.storage.local` — never `sync`, which would replicate one identity
+across profiles and recreate the collision. It is **routing** identity only; the
+`X-Bridge-Secret` gate still authorizes every write. `browserFamily` (Brave detected via
+`navigator.brave.isBrave()`) is descriptive and routes nothing, so two Chrome profiles are
+correctly two sources.
+
+**Modes**, per installation: `MEDIA_BROWSER` (media only), `WORK_BROWSER` (page + project),
+`HYBRID` (all three), `DISABLED` (nothing). Default is `HYBRID` so a single-browser user
+keeps working without opening settings. A mode change releases channels the browser is no
+longer entitled to.
+
+**Brave media policy** — ownership follows *activation*, not focus, which is why the key
+keeps working while the owner reads something else or leaves the browser entirely:
+activating an eligible tab takes ownership; activating an unrelated tab changes nothing;
+closing the owner falls back to the next most recent eligible tab; closing the last clears
+the channel. Eligibility is evidence-based — `og:type` video, a schema.org screen-work
+type, or a real `<video>` with a source or duration — rather than a host allowlist that
+would need editing per service and still miss a self-hosted player.
+
+**Chrome work policy** — `page` is the active tab of the last-focused window, and moves the
+moment the tab changes. Losing OS focus does not erase it.
+
+**Arbitration** is deterministic, never arrival order: mode eligibility first, then a stale
+generation or sequence is refused, then a silent owner (90 s) forfeits, then more recent
+user activity wins, with an id-based tie-break so the outcome cannot flap. Only the owner
+may release a channel.
+
+**Disconnect.** A browser closing cleanly calls `POST /sources/disconnect` and its channels
+go at once; the TTL is the backstop for a crash. `heartbeatTick` asks whether the service
+still knows *this installation* — the old recovery check asked whether the service had any
+context at all, which stops working the moment two browsers publish because the answer is
+almost never no.
+
+**Backward compatibility.** `contextStore` is now a thin view over the channels (media,
+falling back to page), so every existing consumer, route and test is untouched — all 584
+tests pass with no call-site changes. An extension built before channels sends no source
+and is treated as one HYBRID browser publishing media, exactly as before. Context URL gains
+`contextMode` (`auto` | `media` | `page` | `project`); `auto` is media-then-page, so keys
+configured before channels existed resolve against the same thing they always did.
+
+**Observability.** `GET /contexts` shows each channel's owner and value; `GET /sources`
+lists installations. Neither carries a secret. The extension gains a settings page showing
+mode, name, which channels it publishes, and who currently owns each.
+
+**Also fixed while here:** the client-supplied `timestamp` was unvalidated, so a poster
+claiming a far-future time would wedge the legacy store permanently — it is now clamped to
+the server clock.
+
+**Proven against the running service** with two simulated installations: Brave media and
+Chrome page coexisting; `mode_forbids_channel` refusing Chrome's media claim and Brave's
+page claim; a media key resolving `Brickleberry` while Chrome published eight page updates;
+and Brave's disconnect releasing only media. **Not yet proven with the two real browsers**
+— that needs the extension installed in both, and is outstanding.
+
 ### Project-aware Context URL — `INVESTIGATION` (complete) / `BLOCKED` on current-project detection
 
 The goal: the same physical GITHUB / VERCEL / SUPABASE keys open whichever project the

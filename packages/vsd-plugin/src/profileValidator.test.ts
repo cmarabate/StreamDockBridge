@@ -73,16 +73,42 @@ function validateProfileDirectory(profileDir: string) {
   expect(actions['0,1']?.Name).toBe('AUDIO FIX');
   expect(actions['1,1']?.UUID).toBe('com.hotspot.streamdock.obsstudio.record');
   expect(actions['1,1']?.Name).toBe('RECORD');
-  expect(actions['2,1']?.UUID).toBe('com.cmarabate.streamdock.streamdockbridge.imdb');
+  /**
+   * The four website keys are generic Context URL instances now. Each keeps its
+   * own Name and artwork, so the key a person sees is unchanged; only the
+   * mechanism behind it is. Adding a site no longer needs a new action type.
+   */
+  expect(actions['2,1']?.UUID).toBe('com.cmarabate.streamdock.streamdockbridge.contexturl');
   expect(actions['2,1']?.Name).toBe('IMDb');
-  expect(actions['3,1']?.UUID).toBe('com.cmarabate.streamdock.streamdockbridge.cast');
+  expect(actions['2,1']?.Settings?.urlTemplate).toBe('https://www.imdb.com/find?q={title}');
+  expect(actions['3,1']?.UUID).toBe('com.cmarabate.streamdock.streamdockbridge.contexturl');
   expect(actions['3,1']?.Name).toBe('CAST');
-  expect(actions['4,1']?.UUID).toBe('com.cmarabate.streamdock.streamdockbridge.justwatch');
+  // The literal %20 keeps this destination byte-identical to the old route.
+  expect(actions['3,1']?.Settings?.urlTemplate).toBe(
+    'https://www.google.com/search?q={title}%20cast'
+  );
+  expect(actions['4,1']?.UUID).toBe('com.cmarabate.streamdock.streamdockbridge.contexturl');
   expect(actions['4,1']?.Name).toBe('JUSTWATCH');
+  expect(actions['4,1']?.Settings?.urlTemplate).toBe(
+    'https://www.justwatch.com/us/search?q={title}'
+  );
 
   // BOTTOM ROW
-  expect(actions['0,2']?.UUID).toBe('com.cmarabate.streamdock.streamdockbridge.reddit');
+  expect(actions['0,2']?.UUID).toBe('com.cmarabate.streamdock.streamdockbridge.contexturl');
   expect(actions['0,2']?.Name).toBe('REDDIT');
+  expect(actions['0,2']?.Settings?.urlTemplate).toBe('https://www.reddit.com/search/?q={title}');
+
+  /**
+   * Auto icon is off on every migrated key. These carry hand-made artwork, and
+   * several sites publish a favicon SMALLER than it — JustWatch offers only
+   * 16x16 and 32x32 — so switching it on would visibly downgrade them.
+   */
+  for (const slot of ['2,1', '3,1', '4,1', '0,2']) {
+    expect(actions[slot]?.Settings?.autoWebsiteIcon).toBe(false);
+  }
+
+  /** The specialized keys are untouched: none of them is a URL. */
+  expect(actions['1,2']?.UUID).toBe('com.cmarabate.streamdock.streamdockbridge.transcribe');
   expect(actions['1,2']?.UUID).toBe('com.cmarabate.streamdock.streamdockbridge.transcribe');
   expect(actions['1,2']?.Name).toBe('TRANSCRIBE');
 

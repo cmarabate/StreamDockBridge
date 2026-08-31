@@ -4,6 +4,7 @@ import {
   jpegDimensions,
   icoDimensions,
   webpDimensions,
+  dibDimensions,
 } from './imageDimensions';
 
 /**
@@ -148,6 +149,54 @@ describe('ICO', () => {
   it('refuses a malformed directory', () => {
     expect(icoDimensions(Buffer.alloc(4))).toBeNull();
     expect(icoDimensions(Buffer.from([0, 0, 1, 0, 0, 0]))).toBeNull();
+  });
+});
+
+/**
+ * A raw-DIB ICO entry is sized from its BITMAPINFOHEADER, not the directory's
+ * single byte. An entry claiming 256x256 while its header declares 30000x60000
+ * is exactly the file the dimension check exists to refuse.
+ */
+describe('ICO entries holding a raw DIB', () => {
+  function dib(width: number, height: number, headerSize = 40): Buffer {
+    const body = Buffer.alloc(Math.max(40, headerSize));
+    body.writeUInt32LE(headerSize, 0);
+    body.writeInt32LE(width, 4);
+    // Icon DIBs stack the image and its mask, so the stored height is doubled.
+    body.writeInt32LE(height * 2, 8);
+    return body;
+  }
+
+  it('reads a BITMAPINFOHEADER and halves the stacked height', () => {
+    expect(dibDimensions(dib(32, 32))).toEqual({ width: 32, height: 32 });
+    expect(dibDimensions(dib(30000, 60000))).toEqual({ width: 30000, height: 60000 });
+  });
+
+  it('accepts the V4 and V5 header sizes too', () => {
+    expect(dibDimensions(dib(48, 48, 108))).toEqual({ width: 48, height: 48 });
+    expect(dibDimensions(dib(48, 48, 124))).toEqual({ width: 48, height: 48 });
+  });
+
+  it('refuses anything that is not a DIB header', () => {
+    expect(dibDimensions(Buffer.alloc(8))).toBeNull();
+    expect(dibDimensions(png(10, 10))).toBeNull();
+  });
+
+  it('takes the payload header over the directory byte', () => {
+    const payload = dib(30000, 60000);
+    const header = Buffer.alloc(6);
+    header.writeUInt16LE(1, 2);
+    header.writeUInt16LE(1, 4);
+    const entry = Buffer.alloc(16);
+    entry[0] = 0; // directory claims 256
+    entry[1] = 0;
+    entry.writeUInt32LE(payload.length, 8);
+    entry.writeUInt32LE(22, 12);
+    const crafted = Buffer.concat([header, entry, payload]);
+
+    const dims = icoDimensions(crafted)!;
+    expect(dims.width).toBe(30000);
+    expect(dims.height).toBe(60000);
   });
 });
 

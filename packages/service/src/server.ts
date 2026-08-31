@@ -11,6 +11,95 @@ import {
 } from './transcriptForge';
 import { resolveUrlTemplate, placeholderValuesFrom } from './urlTemplate';
 import { IconService } from './iconService';
+import {
+  contextChannels,
+  ContextChannel,
+  CONTEXT_CHANNELS,
+  BROWSER_MODES,
+  BrowserMode,
+  SourceIdentity,
+  ProjectContext,
+  ChannelPayload,
+} from './contextChannels';
+
+/**
+ * Which channel a Context URL key reads.
+ *
+ * `auto` keeps every key written before channels existed behaving exactly as
+ * it does today: media first, page as the fallback. An explicit mode is needed
+ * because {url} and {hostname} are meaningful on both the media and the page
+ * channel, so their intent cannot be inferred from the template alone.
+ */
+export type ContextMode = 'auto' | 'media' | 'page' | 'project';
+
+export const CONTEXT_MODES: ContextMode[] = ['auto', 'media', 'page', 'project'];
+
+export function readContextMode(value: unknown): ContextMode {
+  return typeof value === 'string' && (CONTEXT_MODES as string[]).includes(value)
+    ? (value as ContextMode)
+    : 'auto';
+}
+
+/** Trusted only for routing, never for authorization — the secret does that. */
+export function readSourceIdentity(value: unknown): SourceIdentity | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  const id = typeof raw.browserInstanceId === 'string' ? raw.browserInstanceId.trim() : '';
+  if (!id || id.length > 128) return null;
+
+  const mode = typeof raw.mode === 'string' && (BROWSER_MODES as string[]).includes(raw.mode)
+    ? (raw.mode as BrowserMode)
+    : 'DISABLED';
+
+  const generation =
+    typeof raw.connectionGeneration === 'number' && Number.isFinite(raw.connectionGeneration)
+      ? Math.max(0, Math.floor(raw.connectionGeneration))
+      : 0;
+
+  const text = (input: unknown, fallback: string) =>
+    typeof input === 'string' && input.trim() ? input.trim().slice(0, 64) : fallback;
+
+  return {
+    browserInstanceId: id,
+    browserFamily: text(raw.browserFamily, 'unknown'),
+    displayName: text(raw.displayName, 'Browser'),
+    mode,
+    connectionGeneration: generation,
+  };
+}
+
+export function readChannel(value: unknown): ContextChannel | null {
+  return typeof value === 'string' && (CONTEXT_CHANNELS as string[]).includes(value)
+    ? (value as ContextChannel)
+    : null;
+}
+
+/**
+ * Project identity as observed by a work browser.
+ *
+ * Deliberately a narrow projection: only navigation-relevant identifiers are
+ * accepted, so no token, key or connection string can ride along even if a
+ * future extension were to send one.
+ */
+export function readProjectContext(value: unknown): ProjectContext | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  const name = typeof raw.projectName === 'string' ? raw.projectName.trim().slice(0, 200) : '';
+  if (!name) return null;
+
+  const text = (input: unknown) =>
+    typeof input === 'string' && input.trim() ? input.trim().slice(0, 200) : undefined;
+
+  return {
+    projectKey: typeof raw.projectKey === 'string' && raw.projectKey.trim()
+      ? raw.projectKey.trim().slice(0, 200)
+      : null,
+    projectName: name,
+    evidence: text(raw.evidence) || 'unknown',
+    githubOwner: text(raw.githubOwner),
+    githubRepo: text(raw.githubRepo),
+  };
+}
 
 export interface BridgeServerOptions {
   port?: number;
@@ -146,8 +235,19 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
       req.on('end', () => {
         try {
           const payload = JSON.parse(body);
+
           const rawTitle = payload.documentTitle || payload.rawTitle || '';
           const cleanedTitle = deriveCanonicalTitle(payload);
+
+          /**
+           * The timestamp is client-supplied, and the legacy store compares it
+           * to decide staleness. A poster claiming the year 30000 would wedge
+           * the store permanently, since every later honest post looks older.
+           * Never trust it beyond the server's own clock.
+           */
+          const now = Date.now();
+          const claimed = typeof payload.timestamp === 'number' ? payload.timestamp : now;
+          const timestamp = claimed > now ? now : claimed;
 
           const record: ContextRecord = {
             url: payload.url || '',
@@ -161,11 +261,157 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
             canonicalTitle: cleanedTitle,
             tabId: payload.tabId ?? 0,
             windowId: payload.windowId ?? 0,
-            timestamp: payload.timestamp || Date.now(),
+            timestamp,
           };
 
-          const updated = contextStore.updateContext(record);
-          sendJson(200, { success: true, updated, record: contextStore.getContext() });
+          const source = readSourceIdentity(payload.source);
+
+          /**
+           * No source identity means an extension built before channels
+           * existed. It keeps the old single-context behaviour exactly.
+           */
+          if (!source) {
+            const updated = contextStore.updateContext(record);
+            sendJson(200, { success: true, updated, record: contextStore.getContext() });
+            return;
+          }
+
+          const channel = readChannel(payload.channel);
+          if (!channel) {
+            sendJson(400, { success: false, error: 'unknown_channel' });
+            return;
+          }
+
+          /**
+           * A release says "I no longer have anything for this channel" and is
+           * how Chrome clears PROJECT when the current page proves nothing.
+           * It must not be confusable with an empty page record.
+           */
+          const releasing = payload.release === true;
+          let observed: ChannelPayload | null = null;
+          if (!releasing) {
+            observed =
+              channel === 'project' ? readProjectContext(payload.project) : record;
+            if (!observed) {
+              sendJson(400, { success: false, error: 'invalid_payload' });
+              return;
+            }
+          }
+
+          const result = contextChannels.observe(
+            {
+              source,
+              channel,
+              payload: observed,
+              tabId: record.tabId,
+              windowId: record.windowId,
+              observationSequence:
+                typeof payload.observationSequence === 'number' ? payload.observationSequence : 0,
+              observedAt: timestamp,
+            },
+            now
+          );
+
+          sendJson(200, {
+            success: true,
+            updated: result.accepted,
+            channel,
+            reason: result.accepted ? undefined : result.reason,
+          });
+        } catch (e) {
+          sendJson(400, { success: false, error: 'invalid_json' });
+        }
+      });
+      return;
+    }
+
+    /**
+     * Everything the service currently believes, and who told it.
+     *
+     * Read-only and deliberately verbose: with two browsers publishing
+     * different channels, "why is this key using that title" is otherwise very
+     * hard to answer. Carries no secret — the bridge secret, the extension id
+     * and the page's own content are all absent.
+     */
+    if (req.method === 'GET' && pathname === '/contexts') {
+      if (!isAllowedOrigin(origin, allowAnyExtension)) {
+        sendJson(403, { success: false, error: 'origin_forbidden' });
+        return;
+      }
+
+      const describe = (channel: ContextChannel) => {
+        const state = contextChannels.get(channel);
+        if (!state) return null;
+        const owner = contextChannels
+          .listSources()
+          .find((s) => s.browserInstanceId === state.browserInstanceId);
+        return {
+          owner: {
+            browserInstanceId: state.browserInstanceId,
+            displayName: owner ? owner.displayName : 'unknown',
+            browserFamily: owner ? owner.browserFamily : 'unknown',
+            mode: owner ? owner.mode : 'unknown',
+          },
+          tabId: state.tabId,
+          windowId: state.windowId,
+          observedAt: state.observedAt,
+          value: state.payload,
+        };
+      };
+
+      sendJson(200, {
+        success: true,
+        contexts: {
+          media: describe('media'),
+          page: describe('page'),
+          project: describe('project'),
+        },
+      });
+      return;
+    }
+
+    /** Which browser installations the service has heard from. */
+    if (req.method === 'GET' && pathname === '/sources') {
+      if (!isAllowedOrigin(origin, allowAnyExtension)) {
+        sendJson(403, { success: false, error: 'origin_forbidden' });
+        return;
+      }
+      sendJson(200, { success: true, sources: contextChannels.listSources() });
+      return;
+    }
+
+    /**
+     * A browser saying goodbye.
+     *
+     * HTTP has no connection whose loss we could notice, so a browser that
+     * exits cleanly says so and its channels are released at once. The TTL in
+     * the channel store is the backstop for the times it cannot.
+     */
+    if (req.method === 'POST' && pathname === '/sources/disconnect') {
+      if (!isAllowedOrigin(origin, allowAnyExtension)) {
+        sendJson(403, { success: false, error: 'origin_forbidden' });
+        return;
+      }
+      const clientSecret = req.headers['x-bridge-secret'];
+      if (!secretStore.verifySecret(clientSecret as string | undefined)) {
+        sendJson(401, { success: false, error: 'unauthorized' });
+        return;
+      }
+
+      let body = '';
+      req.on('data', (chunk) => {
+        body += chunk;
+      });
+      req.on('end', () => {
+        try {
+          const parsed = JSON.parse(body);
+          const id = typeof parsed?.browserInstanceId === 'string' ? parsed.browserInstanceId : '';
+          if (!id) {
+            sendJson(400, { success: false, error: 'missing_browser_instance_id' });
+            return;
+          }
+          contextChannels.disconnect(id);
+          sendJson(200, { success: true });
         } catch (e) {
           sendJson(400, { success: false, error: 'invalid_json' });
         }
@@ -251,8 +497,11 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
 
       req.on('end', () => {
         let template: unknown;
+        let contextMode: ContextMode = 'auto';
         try {
-          template = JSON.parse(body)?.template;
+          const parsed = JSON.parse(body);
+          template = parsed?.template;
+          contextMode = readContextMode(parsed?.contextMode);
         } catch (e) {
           sendJson(400, { success: false, error: 'invalid_json' });
           return;
@@ -263,7 +512,27 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
           return;
         }
 
-        const current = contextStore.getCurrentRecord();
+        /**
+         * `auto` is media-then-page, which is exactly what the single-context
+         * store did, so every key configured before channels existed resolves
+         * against the same thing it always has.
+         */
+        const current =
+          contextMode === 'media'
+            ? contextChannels.getRecord('media')
+            : contextMode === 'page'
+            ? contextChannels.getRecord('page')
+            : contextMode === 'project'
+            ? null
+            : contextStore.getCurrentRecord();
+
+        if (contextMode === 'project') {
+          // Project templates need project placeholders, which do not exist
+          // yet. Failing loudly beats opening some other project's page.
+          sendJson(400, { success: false, error: 'project_context_unsupported' });
+          return;
+        }
+
         if (!current) {
           sendJson(400, { success: false, error: 'no_usable_context' });
           return;
