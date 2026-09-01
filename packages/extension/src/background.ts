@@ -295,6 +295,7 @@ export async function heartbeatTick(): Promise<void> {
      * and lose arbitration every time.
      */
     if (allowed.length > 0 && owned.length === 0) await republishAll();
+
   } catch (e) {
     isServiceOffline = true;
   }
@@ -818,6 +819,69 @@ let voiceSessionCounter = 0;
 const voiceSessionsByTab = new Map<number, string>();
 const voiceLifecycleChains = new Map<number, Promise<void>>();
 
+/**
+ * Voice sessions survive an MV3 worker suspension as `chrome.storage.session`.
+ *
+ * The content script's observer keeps running while the worker sleeps. If the
+ * worker is killed mid-dictation, the in-memory tab→session map is lost; when
+ * the observer later emits VOICE_INPUT_ENDED the woken worker would find no
+ * session, silently drop the END, and the paused media would never resume.
+ * Keeping the map in session storage (cleared at browser restart, not visible
+ * to other scripts) lets a woken worker attribute the END to the same session.
+ *
+ * The module-level Map is hydrated lazily and used as a fast path; storage is a
+ * write-through mirror. When `chrome.storage.session` is unavailable (tests,
+ * older surfaces) the in-memory map alone preserves the existing behaviour.
+ */
+const VOICE_SESSION_STORAGE_KEY = 'streamdockbridge.activeVoiceSessions';
+
+function sessionStorageArea(): chrome.storage.StorageArea | null {
+  if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.session) return null;
+  return chrome.storage.session;
+}
+
+async function hydrateVoiceSessions(): Promise<void> {
+  if (voiceSessionsByTab.size > 0) return;
+  const area = sessionStorageArea();
+  if (!area) return;
+  try {
+    const stored = await new Promise<Record<string, unknown>>((resolve) => {
+      area.get(VOICE_SESSION_STORAGE_KEY, (result: Record<string, unknown>) => {
+        const err = chrome.runtime?.lastError;
+        if (err) void err.message;
+        resolve(result || {});
+      });
+    });
+    const raw = stored[VOICE_SESSION_STORAGE_KEY];
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+        const tabId = parseInt(key, 10);
+        if (Number.isInteger(tabId) && typeof value === 'string') {
+          voiceSessionsByTab.set(tabId, value);
+        }
+      }
+    }
+  } catch (_error) {
+    // Session storage unavailable; the in-memory map is the source of truth.
+  }
+}
+
+async function persistVoiceSessions(): Promise<void> {
+  const area = sessionStorageArea();
+  if (!area) return;
+  const raw: Record<string, string> = {};
+  for (const [tabId, sessionId] of voiceSessionsByTab.entries()) {
+    raw[String(tabId)] = sessionId;
+  }
+  try {
+    await new Promise<void>((resolve) => {
+      area.set({ [VOICE_SESSION_STORAGE_KEY]: raw }, () => resolve());
+    });
+  } catch (_error) {
+    // Best effort; the live map keeps working this worker lifetime.
+  }
+}
+
 interface MediaCommandResultPayload {
   commandId: string;
   action: 'PAUSE' | 'RESUME';
@@ -862,16 +926,20 @@ export async function handleVoiceLifecycleMessage(message: any, sender: chrome.r
   const event = message.event;
   if (event !== 'VOICE_INPUT_STARTED' && event !== 'VOICE_INPUT_ENDED') return;
 
+  await hydrateVoiceSessions();
+
   let sessionId: string;
   if (event === 'VOICE_INPUT_STARTED') {
     sessionId =
       voiceSessionsByTab.get(tabId) || `voice-${Date.now()}-${++voiceSessionCounter}`;
     voiceSessionsByTab.set(tabId, sessionId);
+    await persistVoiceSessions();
   } else {
     const activeSessionId = voiceSessionsByTab.get(tabId);
     if (!activeSessionId) return;
     sessionId = activeSessionId;
     voiceSessionsByTab.delete(tabId);
+    await persistVoiceSessions();
   }
 
   const secret = await getSecret();
@@ -946,6 +1014,30 @@ export async function handleMediaOverrideMessage(
   }
 }
 
+/**
+ * The content script saw a real media play/pause transition on its element.
+ *
+ * Streaming SPAs repaint playback without navigating or changing titles, so
+ * this is the only prompt signal the background gets. Record it in the tab
+ * tracker and, when the reported tab is the current media owner, republish the
+ * Media context so the service's playbackState stays authoritative. A
+ * publication never queues a command, so this cannot loop.
+ */
+export async function handleMediaPlaybackChangedMessage(
+  message: any,
+  sender: chrome.runtime.MessageSender
+): Promise<void> {
+  const tabId = sender.tab?.id ?? 0;
+  if (typeof message?.isPlaying !== 'boolean') return;
+  const owner = mediaTabs.get(tabId);
+  if (!owner) return;
+
+  mediaTabs.notePlayback(tabId, message.isPlaying);
+  if (mediaTabs.current()?.tabId === tabId) {
+    await publishMedia();
+  }
+}
+
 let isPollingMediaCommands = false;
 
 function getCommandTab(tabId: number): Promise<chrome.tabs.Tab | null> {
@@ -984,6 +1076,7 @@ function sendMediaCommandToTab(
           command: command.action,
           expectedDocumentGeneration: command.expectedDocumentGeneration,
           expectedMediaTargetId: command.expectedMediaTargetId,
+          expiresAt: command.expiresAt,
         },
         (response: MediaCommandResultPayload | undefined) => {
           const error = chrome.runtime.lastError;
@@ -1029,22 +1122,53 @@ async function postMediaCommandAcknowledgement(
   command: ServiceMediaCommand,
   result: MediaCommandResultPayload
 ): Promise<void> {
+  const body = JSON.stringify({
+    ...result,
+    browserInstanceId: role.browserInstanceId,
+    connectionGeneration: role.connectionGeneration,
+    tabId: command.tabId,
+  });
+  for (const delayMs of [0, 50, 200]) {
+    if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    try {
+      const response = await fetch(`${SERVICE_URL}/media/commands/ack`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Bridge-Secret': secret,
+        },
+        body,
+      });
+      if (response.ok) return;
+    } catch (_error) {
+      // Retry the idempotent acknowledgement. Exhaustion still fails closed.
+    }
+  }
+}
+
+async function mediaCommandStillExecutable(
+  secret: string,
+  role: BrowserRole,
+  command: ServiceMediaCommand
+): Promise<boolean> {
   try {
-    await fetch(`${SERVICE_URL}/media/commands/ack`, {
+    const response = await fetch(`${SERVICE_URL}/media/commands/validate`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'X-Bridge-Secret': secret,
       },
       body: JSON.stringify({
-        ...result,
+        commandId: command.commandId,
         browserInstanceId: role.browserInstanceId,
         connectionGeneration: role.connectionGeneration,
-        tabId: command.tabId,
       }),
     });
+    if (!response.ok) return false;
+    const payload = await response.json();
+    return payload?.success === true && payload?.executable === true;
   } catch (_error) {
-    // Lost acknowledgement fails closed: the service cannot acquire resume authority.
+    return false;
   }
 }
 
@@ -1073,7 +1197,9 @@ async function executeAndAcknowledgeMediaCommand(
     if (
       !tab ||
       tab.windowId !== command.windowId ||
-      (tab.url || '') !== command.mediaUrl
+      (tab.url || '') !== command.mediaUrl ||
+      command.expiresAt < Date.now() ||
+      !(await mediaCommandStillExecutable(secret, role, command))
     ) {
       result = stale();
     } else {
@@ -1177,6 +1303,11 @@ if (typeof chrome !== 'undefined') {
 
       if (message && message.action === 'MEDIA_PLAYBACK_OVERRIDDEN' && sender && (sender as chrome.runtime.MessageSender).tab) {
         void handleMediaOverrideMessage(message, sender as chrome.runtime.MessageSender);
+        return undefined;
+      }
+
+      if (message && message.action === 'MEDIA_PLAYBACK_CHANGED' && sender && (sender as chrome.runtime.MessageSender).tab) {
+        void handleMediaPlaybackChangedMessage(message, sender as chrome.runtime.MessageSender);
         return undefined;
       }
 

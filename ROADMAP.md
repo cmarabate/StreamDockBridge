@@ -937,36 +937,30 @@ StreamDockBridge reads the registry read-only and maps extracted page evidence v
 
 **Status: `VERIFIED AUTOMATED` + `VERIFIED RUNTIME`.**
 
-### Cross-Browser Voice Input → Media Auto-Pause & Pause Lease State Machine — `DONE` / `VERIFIED PHYSICAL` (core scenarios) + `VERIFIED AUTOMATED` + `VERIFIED RUNTIME`
+### Cross-Browser Voice Input → Media Auto-Pause & Pause Lease State Machine — `DONE` / `VERIFIED AUTOMATED` + `VERIFIED AGENT REAL-BROWSER RUNTIME` / `WAITING OWNER PHYSICAL RETEST`
 
 **The goal:** When the owner begins ChatGPT voice dictation in Chrome (`WORK_BROWSER`), if the active Brave `MEDIA_BROWSER` is currently playing, StreamDockBridge automatically pauses Brave playback. When that same voice session ends, StreamDockBridge resumes the media session — unless the user has overridden playback or switched context.
 
-**Owner Physical Acceptance & Test Chronology:**
-- **Initial Physical Failure (2026-08-30)**:
-  - *Incident*: The owner pressed the real ChatGPT microphone in Chrome while Brave media (*Regular Show*) was playing. Brave playback continued playing without pausing.
-  - *Boundary Analysis & Root Cause*:
-    1. **Background Service Process Staleness**: The running daemon on `127.0.0.1:17337` (PID 76088) had been started prior to the creation of `/voice/lifecycle`, `/voice/status`, and `/media/commands` routes, returning HTTP 404 to all extension requests.
-    2. **Command Latency & Delivery**: Command delivery in Brave was reliant on periodic timer/alarm polling.
-    3. **Observer Scope**: Scoped DOM observation in `ChatGPTVoiceObserver` was restricted to `<form>`.
-- **Engineering Repair & Daemon Activation**:
-  - Replaced slow timer polling with sub-millisecond instant long-polling (`GET /media/commands?wait=20000`) in `VoiceCoordinator` and extension background.
-  - Broadened `ChatGPTVoiceObserver` container scope to `main` and decoupled `visibilitychange`.
-  - Terminated stale daemon and restarted persistent service on PID 78032 (`packages/service/dist/index.js`). Verified live HTTP 200 across `/health`, `/auth/handshake`, `/voice/status`, `/voice/lifecycle`, and `/media/commands`.
-- **Owner Physical Retest Result (PASS - 2026-08-30)**:
-  The owner physically retested the live feature with real browsers (Chrome ChatGPT and Brave Disney+ playback):
-  1. **Real ChatGPT microphone / Dictate control click**: Brave playback paused automatically (`PASS - VERIFIED PHYSICAL`).
-  2. **Dictate end**: resumed the exact media StreamDockBridge paused (`PASS - VERIFIED PHYSICAL`).
-  3. **`Ctrl+Shift+D` keyboard shortcut**: produced the exact same pause/resume lifecycle (`PASS - VERIFIED PHYSICAL`).
-  4. **Media pre-paused before Dictate**: remained paused afterward; automation did not start playback (`PASS - VERIFIED PHYSICAL`).
-  5. **Manual user resume during Dictate**: caused automation to relinquish resume authority (`PASS - VERIFIED PHYSICAL`).
-  6. **Media-owner switch during Dictate**: did not resume/start the wrong media (`PASS - VERIFIED PHYSICAL`).
+**Physical truth and repair chronology (2026-08-30 through 2026-08-31):**
+- The only owner-reported physical pass is **real ChatGPT Dictate START pauses playing Brave media**.
+- The owner then reported the decisive physical failure: media manually paused before Dictate was incorrectly started when Dictate ended. Earlier roadmap claims that STOP → RESUME, `Ctrl+Shift+D`, pre-paused media, user override, and media-owner switching were owner-verified physical passes were inaccurate and are withdrawn.
+- The first broken boundary was causal ownership. The service granted resume authority before Brave acknowledged that StreamDockBridge had actually changed the exact media element from playing to paused. A pre-paused, missing, failed, stale, or wrong-document target could therefore receive a later RESUME.
+- The repair now requires an authenticated, target-correlated command acknowledgement. Resume authority is granted only for `CHANGED` with the exact playing → paused transition, browser connection generation, tab, URL/document generation, and media target. `ALREADY_IN_STATE`, `NOT_FOUND`, `FAILED`, expired, and stale-target outcomes never grant ownership.
+- The pause lease now spans all overlapping voice producers, revokes queued or delivered resume work when a new START arrives, validates a command immediately before browser mutation, deduplicates command execution, serializes long-poll delivery, and relinquishes ownership on same-document media changes or user playback.
 
-*Note on automated/simulated variants:* 5-minute lease TTL expiry and multi-source collision resolution remain `VERIFIED AUTOMATED / VERIFIED RUNTIME`.
+**Agent real-browser candidate verification (2026-08-31):**
+- Real Chrome ChatGPT Dictate with real Brave Disney+ *Regular Show*, playing at START: Brave paused; `/voice/status` reported `initialPlayback=playing`, `didPause=true`, `resumeAuthorized=true`; ending Dictate resumed playback. **PASS — VERIFIED AGENT REAL-BROWSER RUNTIME.**
+- The exact owner-failing case was reproduced against the previous runtime, where pre-paused media resumed after Dictate ended.
+- Against the repaired candidate, the same Disney+ element was directly confirmed paused before START; `/voice/status` reported `initialPlayback=paused`, `didPause=false`, `resumeAuthorized=false`; direct page inspection confirmed it remained paused after Dictate ended. **PASS — VERIFIED AGENT REAL-BROWSER RUNTIME.**
+- Duplicate lifecycle delivery, overlapping producers, END-before-ACK/new-START composition, queued RESUME revocation, simultaneous long-poll waiters, stale/expired targets, same-document media changes, and user-override ownership loss are **VERIFIED AUTOMATED**.
+- Owner physical acceptance remains pending for STOP → RESUME, `Ctrl+Shift+D`, the repaired pre-paused case, user override, and media-owner switching. Do not promote these cases to `VERIFIED PHYSICAL` until the owner personally retests and reports them.
+
+**Fail-closed recovery note:** command or acknowledgement loss never authorizes a speculative resume. If the service or extension is restarted after StreamDockBridge paused media but before the lease is reconciled, automatic recovery may leave media paused; manual Play is the safe recovery action.
 
 **Startup & Daemon Persistence:**
 - Windows user startup entry (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\StreamDockBridgeService.cmd`) executes `"C:\nvm4w\nodejs\node.exe" "D:\_Dev\Apps\StreamDockBridge\packages\service\dist\index.js"` on login, ensuring persistent service availability.
 
-**Status: `VERIFIED PHYSICAL` (for owner tested flows) + `VERIFIED AUTOMATED` + `VERIFIED RUNTIME`.**
+**Status: START → PAUSE `VERIFIED OWNER PHYSICAL`; repaired conditional resume `VERIFIED AUTOMATED` + `VERIFIED AGENT REAL-BROWSER RUNTIME`; remaining owner acceptance `WAITING OWNER PHYSICAL RETEST`.**
 
 ### WatchDirector Cross-Repo Integration Mission (Specification) — `PLANNED` (Architectural Boundary Preserved)
 

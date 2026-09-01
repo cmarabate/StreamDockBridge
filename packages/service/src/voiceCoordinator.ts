@@ -49,6 +49,7 @@ export interface PauseLease {
   resumeAuthorized: boolean;
   overridden: boolean;
   pauseCommandId?: string;
+  resumeCommandId?: string;
   endRequested: boolean;
   createdAt: number;
   expiresAt: number;
@@ -70,6 +71,7 @@ export interface PendingMediaCommand {
   expiresAt: number;
   acknowledged: boolean;
   deliveredAt?: number;
+  cancelled?: boolean;
 }
 
 export interface MediaCommandAcknowledgement {
@@ -119,7 +121,7 @@ export const LEASE_TTL_MS = 5 * 60 * 1000;
 export const MEDIA_COMMAND_TTL_MS = 10_000;
 
 export class VoiceCoordinator {
-  private activeSession: VoiceSession | null = null;
+  private activeSessions = new Map<string, VoiceSession>();
   private activeLease: PauseLease | null = null;
   private pendingCommands = new Map<string, PendingMediaCommand[]>();
   private commandsById = new Map<string, PendingMediaCommand>();
@@ -139,29 +141,46 @@ export class VoiceCoordinator {
     this.expireLease(now);
 
     if (event === 'VOICE_INPUT_STARTED') {
-      if (this.activeSession?.active) {
-        const sameProducer =
-          this.activeSession.sessionId === sessionId &&
-          this.activeSession.source.browserInstanceId === source.browserInstanceId &&
-          this.activeSession.source.connectionGeneration === source.connectionGeneration &&
-          this.activeSession.tabId === tabId;
-        return {
-          success: true,
-          actionTaken: sameProducer ? 'duplicate_start_ignored' : 'overlapping_start_ignored',
-        };
+      const producerKey = this.voiceProducerKey(source, tabId, sessionId);
+      if (this.activeSessions.has(producerKey)) {
+        return { success: true, actionTaken: 'duplicate_start_ignored' };
       }
 
-      const mediaState = this.contextChannels.get('media');
-      const mediaRecord = this.contextChannels.getRecord('media') as ContextRecord | null;
-
-      this.activeSession = {
+      const hadActiveVoice = this.activeSessions.size > 0;
+      this.activeSessions.set(producerKey, {
         sessionId,
         source,
         tabId,
         provider,
         startedAt: now,
         active: true,
-      };
+      });
+
+      // One pause lease spans the complete interval during which at least one
+      // producer is active. A second producer joins that interval rather than
+      // replacing the lease that owns the causal PAUSE.
+      if (hadActiveVoice) {
+        return { success: true, actionTaken: 'overlapping_start_joined' };
+      }
+
+      // A new voice interval can begin while the prior RESUME is still queued
+      // or delivered. Revoke that command and retain the exact pause ownership.
+      if (this.activeLease) {
+        this.activeLease.endRequested = false;
+        if (this.activeLease.resumeCommandId) {
+          const resume = this.commandsById.get(this.activeLease.resumeCommandId);
+          if (resume && !resume.acknowledged) {
+            this.cancelCommand(resume);
+            if (!resume.deliveredAt) this.activeLease.resumeCommandId = undefined;
+          } else {
+            this.activeLease.resumeCommandId = undefined;
+          }
+        }
+        return { success: true, actionTaken: 'voice_started_existing_pause_retained' };
+      }
+
+      const mediaState = this.contextChannels.get('media');
+      const mediaRecord = this.contextChannels.getRecord('media') as ContextRecord | null;
 
       if (!mediaState || !mediaRecord || !mediaState.browserInstanceId) {
         this.activeLease = null;
@@ -206,17 +225,22 @@ export class VoiceCoordinator {
     }
 
     if (event === 'VOICE_INPUT_ENDED') {
-      if (!this.activeSession || !this.sameVoiceProducer(this.activeSession, source, tabId, sessionId)) {
+      const producerKey = this.voiceProducerKey(source, tabId, sessionId);
+      const session = this.activeSessions.get(producerKey);
+      if (!session) {
         return { success: true, actionTaken: 'stale_or_unknown_end_ignored' };
       }
 
-      this.activeSession.active = false;
-      this.activeSession.endedAt = now;
-      this.activeSession = null;
+      session.active = false;
+      session.endedAt = now;
+      this.activeSessions.delete(producerKey);
+
+      if (this.activeSessions.size > 0) {
+        return { success: true, actionTaken: 'voice_ended_other_producers_active' };
+      }
 
       const lease = this.activeLease;
-      if (!lease || lease.voiceSessionId !== sessionId) {
-        this.activeLease = null;
+      if (!lease) {
         return { success: true, actionTaken: 'voice_ended_no_lease' };
       }
 
@@ -230,7 +254,7 @@ export class VoiceCoordinator {
         const pauseCommand = this.commandsById.get(lease.pauseCommandId);
         if (pauseCommand && !pauseCommand.acknowledged) {
           if (!pauseCommand.deliveredAt) {
-            this.cancelUndeliveredCommand(pauseCommand);
+            this.cancelCommand(pauseCommand);
             this.activeLease = null;
             return { success: true, actionTaken: 'voice_ended_pause_cancelled' };
           }
@@ -265,7 +289,34 @@ export class VoiceCoordinator {
     this.commandsById.delete(command.commandId);
 
     if (command.action === 'RESUME') {
-      return { success: true, actionTaken: `resume_ack_${acknowledgement.outcome.toLowerCase()}` };
+      const lease = this.activeLease;
+      if (!lease || lease.leaseId !== command.leaseId || lease.resumeCommandId !== command.commandId) {
+        return { success: true, actionTaken: 'stale_resume_ack_ignored' };
+      }
+
+      lease.resumeCommandId = undefined;
+      if (this.activeSessions.size === 0) {
+        this.activeLease = null;
+        return { success: true, actionTaken: `resume_ack_${acknowledgement.outcome.toLowerCase()}` };
+      }
+
+      // A START revoked this RESUME after it was delivered. If it nevertheless
+      // changed playback, immediately reacquire the exact target with a new
+      // conditional PAUSE. A validation call in the browser prevents this path
+      // in the normal case; this is the fail-closed race fallback.
+      if (
+        acknowledgement.finalPlayback === 'playing' &&
+        (acknowledgement.outcome === 'CHANGED' || acknowledgement.outcome === 'ALREADY_IN_STATE')
+      ) {
+        lease.didPause = false;
+        lease.resumeAuthorized = false;
+        lease.initialPlayback = 'playing';
+        const pause = this.enqueueMediaCommand(lease, 'PAUSE');
+        lease.pauseCommandId = pause.commandId;
+        return { success: true, actionTaken: 'revoked_resume_repause_pending' };
+      }
+
+      return { success: true, actionTaken: 'revoked_resume_did_not_change_playback' };
     }
 
     const lease = this.activeLease;
@@ -279,6 +330,10 @@ export class VoiceCoordinator {
       acknowledgement.finalPlayback === 'paused' &&
       !!acknowledgement.documentGeneration &&
       !!acknowledgement.mediaTargetId &&
+      (!command.expectedDocumentGeneration ||
+        command.expectedDocumentGeneration === acknowledgement.documentGeneration) &&
+      (!command.expectedMediaTargetId ||
+        command.expectedMediaTargetId === acknowledgement.mediaTargetId) &&
       (!lease.mediaDocumentGeneration ||
         lease.mediaDocumentGeneration === acknowledgement.documentGeneration);
 
@@ -296,7 +351,7 @@ export class VoiceCoordinator {
       lease.resumeAuthorized = false;
     }
 
-    if (lease.endRequested) {
+    if (lease.endRequested && this.activeSessions.size === 0) {
       return this.finishEndedLease(lease, Date.now());
     }
 
@@ -346,7 +401,7 @@ export class VoiceCoordinator {
       mediaUrl: lease.mediaUrl,
       action,
       expectedDocumentGeneration: lease.mediaDocumentGeneration,
-      expectedMediaTargetId: action === 'RESUME' ? lease.mediaTargetId : undefined,
+      expectedMediaTargetId: lease.mediaTargetId,
       issuedAt: now,
       expiresAt: now + MEDIA_COMMAND_TTL_MS,
       acknowledged: false,
@@ -359,9 +414,10 @@ export class VoiceCoordinator {
 
     const pendingWaiters = this.waiters.get(command.browserInstanceId);
     if (pendingWaiters?.length) {
-      this.waiters.delete(command.browserInstanceId);
-      const commands = this.getPendingCommands(command.browserInstanceId);
-      for (const waiter of pendingWaiters) waiter(commands);
+      const waiter = pendingWaiters.shift();
+      if (pendingWaiters.length === 0) this.waiters.delete(command.browserInstanceId);
+      else this.waiters.set(command.browserInstanceId, pendingWaiters);
+      if (waiter) waiter(this.getPendingCommands(command.browserInstanceId));
     }
 
     return command;
@@ -406,7 +462,7 @@ export class VoiceCoordinator {
     const deliverable: PendingMediaCommand[] = [];
 
     for (const command of queue) {
-      if (command.expiresAt < now) {
+      if (command.cancelled || command.expiresAt < now) {
         this.acknowledgeMediaCommand({
           commandId: command.commandId,
           browserInstanceId: command.browserInstanceId,
@@ -432,7 +488,7 @@ export class VoiceCoordinator {
   }
 
   public getActiveSession(): VoiceSession | null {
-    return this.activeSession;
+    return this.activeSessions.values().next().value ?? null;
   }
 
   public getStatus(): VoiceStatus {
@@ -440,12 +496,12 @@ export class VoiceCoordinator {
     this.expireLease(now);
     return {
       voice: {
-        active: !!this.activeSession?.active,
-        sessionId: this.activeSession?.sessionId,
-        sourceBrowser: this.activeSession?.source.displayName,
-        tabId: this.activeSession?.tabId,
-        provider: this.activeSession?.provider,
-        startedAt: this.activeSession?.startedAt,
+        active: this.activeSessions.size > 0,
+        sessionId: this.getActiveSession()?.sessionId,
+        sourceBrowser: this.getActiveSession()?.source.displayName,
+        tabId: this.getActiveSession()?.tabId,
+        provider: this.getActiveSession()?.provider,
+        startedAt: this.getActiveSession()?.startedAt,
       },
       mediaAutoPause: {
         leaseActive: !!this.activeLease,
@@ -462,25 +518,45 @@ export class VoiceCoordinator {
   }
 
   public clear(): void {
-    this.activeSession = null;
+    this.activeSessions.clear();
     this.activeLease = null;
     this.pendingCommands.clear();
     this.commandsById.clear();
     this.waiters.clear();
   }
 
-  private sameVoiceProducer(
-    session: VoiceSession,
+  public isMediaCommandExecutable(
+    commandId: string,
+    browserInstanceId: string,
+    connectionGeneration: number
+  ): boolean {
+    const command = this.commandsById.get(commandId);
+    if (
+      !command ||
+      command.acknowledged ||
+      command.cancelled ||
+      command.expiresAt < Date.now() ||
+      command.browserInstanceId !== browserInstanceId ||
+      command.connectionGeneration !== connectionGeneration
+    ) {
+      return false;
+    }
+    if (command.action === 'RESUME') {
+      return !!(
+        this.activeSessions.size === 0 &&
+        this.activeLease?.endRequested &&
+        this.activeLease.resumeCommandId === command.commandId
+      );
+    }
+    return this.activeLease?.pauseCommandId === command.commandId;
+  }
+
+  private voiceProducerKey(
     source: VoiceSource,
     tabId: number,
     sessionId: string
-  ): boolean {
-    return (
-      session.sessionId === sessionId &&
-      session.source.browserInstanceId === source.browserInstanceId &&
-      session.source.connectionGeneration === source.connectionGeneration &&
-      session.tabId === tabId
-    );
+  ): string {
+    return `${source.browserInstanceId}:${source.connectionGeneration}:${tabId}:${sessionId}`;
   }
 
   private finishEndedLease(
@@ -504,8 +580,8 @@ export class VoiceCoordinator {
       return { success: true, actionTaken: 'media_owner_or_generation_changed_no_resume' };
     }
 
-    this.enqueueMediaCommand(lease, 'RESUME');
-    this.activeLease = null;
+    const resume = this.enqueueMediaCommand(lease, 'RESUME');
+    lease.resumeCommandId = resume.commandId;
     return { success: true, actionTaken: 'voice_ended_media_resume_queued' };
   }
 
@@ -526,7 +602,9 @@ export class VoiceCoordinator {
     );
   }
 
-  private cancelUndeliveredCommand(command: PendingMediaCommand): void {
+  private cancelCommand(command: PendingMediaCommand): void {
+    command.cancelled = true;
+    if (command.deliveredAt) return;
     const queue = this.pendingCommands.get(command.browserInstanceId) || [];
     this.pendingCommands.set(
       command.browserInstanceId,
@@ -539,7 +617,11 @@ export class VoiceCoordinator {
     if (!this.activeLease || now <= this.activeLease.expiresAt) return;
     if (this.activeLease.pauseCommandId) {
       const command = this.commandsById.get(this.activeLease.pauseCommandId);
-      if (command && !command.deliveredAt) this.cancelUndeliveredCommand(command);
+      if (command) this.cancelCommand(command);
+    }
+    if (this.activeLease.resumeCommandId) {
+      const command = this.commandsById.get(this.activeLease.resumeCommandId);
+      if (command) this.cancelCommand(command);
     }
     this.activeLease = null;
   }

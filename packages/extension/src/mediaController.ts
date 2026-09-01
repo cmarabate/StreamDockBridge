@@ -18,6 +18,7 @@ export interface MediaCommandRequest {
   command: 'PAUSE' | 'RESUME';
   expectedDocumentGeneration?: string;
   expectedMediaTargetId?: string;
+  expiresAt?: number;
 }
 
 export interface MediaCommandResult {
@@ -126,22 +127,50 @@ export class MediaPlaybackController {
   private ownedPause: OwnedPause | null = null;
   private expectedPauseEvent: HTMLVideoElement | null = null;
   private expectedResumeEvent: HTMLVideoElement | null = null;
+  private readonly completedCommands = new Map<string, MediaCommandResult>();
+  private readonly inFlightCommands = new Map<string, Promise<MediaCommandResult>>();
 
   constructor(
     private readonly documentGeneration: string,
-    private readonly onUserOverride?: (evidence: MediaOverrideEvidence) => void
+    private readonly onUserOverride?: (evidence: MediaOverrideEvidence) => void,
+    private readonly onPlaybackChange?: (isPlaying: boolean) => void
   ) {
     this.attachEventListeners();
   }
 
-  public async execute(request: MediaCommandRequest): Promise<MediaCommandResult> {
+  public execute(request: MediaCommandRequest): Promise<MediaCommandResult> {
+    const completed = this.completedCommands.get(request.commandId);
+    if (completed) return Promise.resolve(completed);
+
+    const inFlight = this.inFlightCommands.get(request.commandId);
+    if (inFlight) return inFlight;
+
+    // Register before beginning the mutation. Deferring execution by one
+    // microtask makes two same-turn deliveries share this exact promise rather
+    // than both entering pause()/play() before a result can be cached.
+    const execution = Promise.resolve().then(() => this.executeOnce(request));
+    this.inFlightCommands.set(request.commandId, execution);
+    const clearInFlight = () => {
+      if (this.inFlightCommands.get(request.commandId) === execution) {
+        this.inFlightCommands.delete(request.commandId);
+      }
+    };
+    void execution.then(clearInFlight, clearInFlight);
+    return execution;
+  }
+
+  private async executeOnce(request: MediaCommandRequest): Promise<MediaCommandResult> {
+    if (request.expiresAt !== undefined && request.expiresAt < Date.now()) {
+      return this.remember(this.result(request, 'STALE_TARGET', 'unknown', 'unknown'));
+    }
     if (
       request.expectedDocumentGeneration &&
       request.expectedDocumentGeneration !== this.documentGeneration
     ) {
-      return this.result(request, 'STALE_TARGET', 'unknown', 'unknown');
+      return this.remember(this.result(request, 'STALE_TARGET', 'unknown', 'unknown'));
     }
-    return request.command === 'PAUSE' ? this.pause(request) : this.resume(request);
+    const result = request.command === 'PAUSE' ? await this.pause(request) : await this.resume(request);
+    return this.remember(result);
   }
 
   private async pause(request: MediaCommandRequest): Promise<MediaCommandResult> {
@@ -149,6 +178,9 @@ export class MediaPlaybackController {
     if (!video) return this.result(request, 'NOT_FOUND', 'unknown', 'unknown');
 
     const mediaTargetId = this.targetId(video);
+    if (request.expectedMediaTargetId && request.expectedMediaTargetId !== mediaTargetId) {
+      return this.result(request, 'STALE_TARGET', this.stateOf(video), this.stateOf(video), mediaTargetId);
+    }
     if (video.paused || video.ended) {
       return this.result(request, 'ALREADY_IN_STATE', 'paused', 'paused', mediaTargetId);
     }
@@ -166,6 +198,9 @@ export class MediaPlaybackController {
       return this.result(request, 'FAILED', 'playing', this.stateOf(video), mediaTargetId);
     }
 
+    // Do not depend on a non-bubbling media event reaching the document-level
+    // listener. The verified state transition is the authoritative boundary.
+    this.expectedPauseEvent = null;
     this.ownedPause = {
       leaseId: request.leaseId,
       pauseCommandId: request.commandId,
@@ -207,6 +242,10 @@ export class MediaPlaybackController {
       return this.result(request, 'FAILED', 'paused', this.stateOf(video), owned.mediaTargetId);
     }
 
+    // Some players do not expose their play event outside the media element.
+    // Leaving this marker set would swallow the next genuine user Play as if
+    // it were the bridge's already-completed resume.
+    this.expectedResumeEvent = null;
     this.ownedPause = null;
     return this.result(request, 'CHANGED', 'paused', 'playing', owned.mediaTargetId);
   }
@@ -225,11 +264,26 @@ export class MediaPlaybackController {
     if (!target || target.tagName !== 'VIDEO') return;
     if (target === this.expectedResumeEvent) {
       this.expectedResumeEvent = null;
+      this.emitPlaybackChange(target);
       return;
     }
 
+    this.emitPlaybackChange(target);
     const owned = this.ownedPause;
-    if (!owned || owned.video !== target) return;
+    if (!owned) return;
+    // Starting any other video in the document changes media authority. The
+    // original paused element must never be resumed underneath it.
+    if (owned.video !== target) {
+      this.ownedPause = null;
+      this.expectedPauseEvent = null;
+      this.onUserOverride?.({
+        leaseId: owned.leaseId,
+        pauseCommandId: owned.pauseCommandId,
+        documentGeneration: this.documentGeneration,
+        mediaTargetId: owned.mediaTargetId,
+      });
+      return;
+    }
     this.ownedPause = null;
     this.expectedPauseEvent = null;
     this.onUserOverride?.({
@@ -243,11 +297,13 @@ export class MediaPlaybackController {
   private readonly onVideoPause = (event: Event): void => {
     const target = event.target as HTMLVideoElement;
     if (!target || target.tagName !== 'VIDEO') return;
+    this.emitPlaybackChange(target);
     if (target === this.expectedPauseEvent) this.expectedPauseEvent = null;
   };
 
   private readonly onVideoTerminated = (event: Event): void => {
     const target = event.target as HTMLVideoElement;
+    this.emitPlaybackChange(target);
     const owned = this.ownedPause;
     if (!target || target.tagName !== 'VIDEO' || !owned || owned.video !== target) return;
     this.ownedPause = null;
@@ -258,6 +314,25 @@ export class MediaPlaybackController {
       mediaTargetId: owned.mediaTargetId,
     });
   };
+
+  /**
+   * Report a real media transition to the surrounding extension so the Media
+   * context can be republished while the tab sits still.
+   *
+   * A streaming page pressing Play does not navigate, change its title data or
+   * switch tabs, so nothing else wakes the background. Without this the service
+   * keeps the last-published playbackState (often 'paused' from page load) and
+   * the voice coordinator, trusting that authoritative snapshot, treats an
+   * actually-playing tab as pre-paused and never pauses or later resumes it.
+   *
+   * The bridge's own PAUSE/RESUME is included on purpose: republishing the
+   * resulting paused/playing state keeps /contexts authoritative, and it cannot
+   * loop because a publication never queues a command.
+   */
+  private emitPlaybackChange(target: HTMLVideoElement | null): void {
+    if (!target || target.tagName !== 'VIDEO' || typeof this.onPlaybackChange !== 'function') return;
+    this.onPlaybackChange(!target.paused && !target.ended);
+  }
 
   private targetId(video: HTMLVideoElement): string {
     const existing = this.targetIds.get(video);
@@ -287,5 +362,15 @@ export class MediaPlaybackController {
       documentGeneration: this.documentGeneration,
       mediaTargetId,
     };
+  }
+
+  private remember(result: MediaCommandResult): MediaCommandResult {
+    this.completedCommands.set(result.commandId, result);
+    // A document cannot accumulate an unbounded replay cache during a long session.
+    if (this.completedCommands.size > 256) {
+      const oldest = this.completedCommands.keys().next().value;
+      if (oldest) this.completedCommands.delete(oldest);
+    }
+    return result;
   }
 }

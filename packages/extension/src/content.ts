@@ -34,6 +34,16 @@ export function initContentScript(): void {
         } catch (e) {
           void e;
         }
+      }, (isPlaying) => {
+        try {
+          chrome.runtime.sendMessage({
+            action: 'MEDIA_PLAYBACK_CHANGED',
+            isPlaying,
+            documentGeneration,
+          });
+        } catch (e) {
+          void e;
+        }
       });
     }
 
@@ -77,6 +87,7 @@ export function initContentScript(): void {
               typeof message.expectedMediaTargetId === 'string'
                 ? message.expectedMediaTargetId
                 : undefined,
+            expiresAt: typeof message.expiresAt === 'number' ? message.expiresAt : undefined,
           };
           mediaController
             .execute(request)

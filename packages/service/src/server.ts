@@ -929,6 +929,48 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
     }
 
     /** Exact execution result for one delivered media command. */
+    if (req.method === 'POST' && pathname === '/media/commands/validate') {
+      if (!isAllowedOrigin(origin, allowAnyExtension)) {
+        sendJson(403, { success: false, error: 'origin_forbidden' });
+        return;
+      }
+      const clientSecret = req.headers['x-bridge-secret'];
+      if (!secretStore.verifySecret(clientSecret as string | undefined)) {
+        sendJson(401, { success: false, error: 'unauthorized' });
+        return;
+      }
+
+      let body = '';
+      req.on('data', (chunk) => {
+        body += chunk;
+      });
+      req.on('end', () => {
+        try {
+          const payload = JSON.parse(body);
+          if (
+            typeof payload.commandId !== 'string' ||
+            typeof payload.browserInstanceId !== 'string' ||
+            typeof payload.connectionGeneration !== 'number'
+          ) {
+            sendJson(400, { success: false, error: 'invalid_media_command_validation' });
+            return;
+          }
+          sendJson(200, {
+            success: true,
+            executable: voiceCoordinator.isMediaCommandExecutable(
+              payload.commandId,
+              payload.browserInstanceId,
+              payload.connectionGeneration
+            ),
+          });
+        } catch (_error) {
+          sendJson(400, { success: false, error: 'invalid_json' });
+        }
+      });
+      return;
+    }
+
+    /** Exact execution result for one delivered media command. */
     if (req.method === 'POST' && pathname === '/media/commands/ack') {
       if (!isAllowedOrigin(origin, allowAnyExtension)) {
         sendJson(403, { success: false, error: 'origin_forbidden' });
@@ -1028,6 +1070,18 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
             documentGeneration,
             mediaTargetId,
           } = payload;
+          if (
+            typeof browserInstanceId !== 'string' ||
+            typeof connectionGeneration !== 'number' ||
+            typeof tabId !== 'number' ||
+            typeof leaseId !== 'string' ||
+            typeof pauseCommandId !== 'string' ||
+            typeof documentGeneration !== 'string' ||
+            typeof mediaTargetId !== 'string'
+          ) {
+            sendJson(400, { success: false, error: 'invalid_media_override' });
+            return;
+          }
           const overridden = voiceCoordinator.handleUserOverride(browserInstanceId, tabId, {
             connectionGeneration,
             leaseId,

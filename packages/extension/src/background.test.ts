@@ -76,6 +76,22 @@ describe('Extension Background Unit Tests (Single Authority Rules A-G)', () => {
           set: jest.fn((data, cb) => cb && cb()),
           remove: jest.fn((keys, cb) => cb && cb()),
         },
+        session: {
+          _data: {} as Record<string, unknown>,
+          get: jest.fn(function (this: any, keys, cb) {
+            cb(this._data);
+          }),
+          set: jest.fn(function (this: any, data, cb) {
+            Object.assign(this._data, data);
+            cb && cb();
+          }),
+          remove: jest.fn(function (this: any, keys, cb) {
+            const all = keys as string | string[];
+            const k = Array.isArray(all) ? all : [all];
+            for (const key of k) delete this._data[key];
+            cb && cb();
+          }),
+        },
       },
       scripting: {
         executeScript: jest.fn(async () => [{ result: undefined }]),
@@ -521,5 +537,235 @@ describe('Extension Background Unit Tests (Single Authority Rules A-G)', () => {
         hasVideo: true,
       });
     });
+  });
+});
+
+describe('Voice session survival & playback publication', () => {
+  let mockFetch: jest.Mock;
+  let activeBg: typeof import('./background');
+  let workerA: typeof import('./background');
+  let workerB: typeof import('./background');
+
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+  beforeEach(() => {
+    jest.resetModules();
+    mockFetch = jest.fn();
+    (global as any).fetch = mockFetch;
+    (global as any).chrome = {
+      windows: {
+        WINDOW_ID_NONE: -1,
+        getLastFocused: jest.fn(() => {}),
+        getAll: jest.fn(() => {}),
+        onFocusChanged: { addListener: jest.fn() },
+      },
+      tabs: {
+        get: jest.fn((tabId, cb) => cb({ id: tabId, windowId: 1, active: true })),
+        sendMessage: jest.fn((tabId, msg, cb) => cb({})),
+        onActivated: { addListener: jest.fn() },
+        onUpdated: { addListener: jest.fn() },
+        onCreated: { addListener: jest.fn() },
+      },
+      runtime: {
+        lastError: undefined,
+        sendMessage: jest.fn(),
+        onStartup: { addListener: jest.fn() },
+        onInstalled: { addListener: jest.fn() },
+        onMessage: { addListener: jest.fn() },
+      },
+      storage: {
+        local: {
+          get: jest.fn((keys, cb) => cb({})),
+          set: jest.fn((data, cb) => cb && cb()),
+          remove: jest.fn((keys, cb) => cb && cb()),
+        },
+        session: {
+          _data: {} as Record<string, unknown>,
+          get: jest.fn(function (this: any, keys, cb) {
+            cb(this._data);
+          }),
+          set: jest.fn(function (this: any, data, cb) {
+            Object.assign(this._data, data);
+            cb && cb();
+          }),
+          remove: jest.fn(function (this: any, keys, cb) {
+            const all = keys as string | string[];
+            const k = Array.isArray(all) ? all : [all];
+            for (const key of k) delete this._data[key];
+            cb && cb();
+          }),
+        },
+      },
+      scripting: { executeScript: jest.fn(async () => [{ result: undefined }]) },
+      alarms: {
+        create: jest.fn(),
+        onAlarm: { addListener: jest.fn() },
+      },
+    };
+  });
+
+  it('keeps an in-flight voice session through an MV3 worker restart so END is not dropped', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true, secret: 'test-secret' }),
+    });
+
+    // First worker lifetime: START persists the tab→session mapping.
+    workerA = require('./background');
+    workerA.clearCachedSecret();
+    await workerA.handleVoiceLifecycleMessage(
+      { event: 'VOICE_INPUT_STARTED' },
+      { tab: { id: 42 } } as any
+    );
+    await flush();
+
+    // Simulate worker suspension by discarding the module AND its in-memory maps.
+    jest.resetModules();
+    // Session storage survives (it lives in the browser, not the worker).
+
+    // Second worker lifetime: fresh in-memory state, hydrated from session storage.
+    workerB = require('./background');
+    workerB.clearCachedSecret();
+
+    // END must now resolve to the persisted session and POST to the service.
+    mockFetch.mockClear();
+    await workerB.handleVoiceLifecycleMessage(
+      { event: 'VOICE_INPUT_ENDED' },
+      { tab: { id: 42 } } as any
+    );
+    await flush();
+
+    const lifecycleCall = mockFetch.mock.calls.find((call) =>
+      String(call[0]).includes('/voice/lifecycle')
+    );
+    expect(lifecycleCall).toBeTruthy();
+    const posted = JSON.parse(lifecycleCall[1].body);
+    expect(posted.event).toBe('VOICE_INPUT_ENDED');
+    expect(posted.sessionId).toContain('voice-');
+    expect(posted.tabId).toBe(42);
+  });
+
+  it('republishes Media context when the owner tab reports a playback change', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true, secret: 'test-secret' }),
+    });
+
+    activeBg = require('./background');
+    activeBg.clearCachedSecret();
+    const mediaTabs = activeBg.getMediaTabs();
+    mediaTabs.clear();
+    // Directly seed the tracker as if the media browser had bootstrap'd this tab.
+    mediaTabs.noteActivated(7, 1, 'https://www.disneyplus.com/play/x', true, false);
+
+    // The owner content script answers the metadata probe to confirm it is playing.
+    (global as any).chrome.tabs.sendMessage = jest.fn((tabId, msg, cb) => {
+      cb({ hasVideo: true, isPlaying: true });
+    });
+    // The agent play event also raced ahead; keep the tracker authoritative.
+    mediaTabs.notePlayback(7, true);
+
+    mockFetch.mockClear();
+    await activeBg.handleMediaPlaybackChangedMessage(
+      { isPlaying: true, documentGeneration: 'doc-7' },
+      { tab: { id: 7 } } as any
+    );
+    await flush();
+
+    const publishCall = mockFetch.mock.calls.find((call) =>
+      String(call[0]) === 'http://127.0.0.1:17337/context'
+    );
+    expect(publishCall).toBeTruthy();
+    const envelope = JSON.parse(publishCall[1].body);
+    expect(envelope.channel).toBe('media');
+    expect(envelope.playbackState).toBe('playing');
+    expect(envelope.tabId).toBe(7);
+  });
+
+  it('does not republish for a non-owner tab reporting a playback change', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true, secret: 'test-secret' }),
+    });
+
+    activeBg = require('./background');
+    activeBg.clearCachedSecret();
+    const mediaTabs = activeBg.getMediaTabs();
+    mediaTabs.clear();
+    mediaTabs.noteActivated(7, 1, 'https://www.disneyplus.com/play/x', true, false);
+
+    mockFetch.mockClear();
+    await activeBg.handleMediaPlaybackChangedMessage(
+      { isPlaying: true, documentGeneration: 'doc-8' },
+      { tab: { id: 8 } } as any
+    );
+    await flush();
+
+    const publishCall = mockFetch.mock.calls.find((call) =>
+      String(call[0]) === 'http://127.0.0.1:17337/context'
+    );
+    expect(publishCall).toBeUndefined();
+  });
+
+  it('retries one acknowledgement with the exact same identity and mutates media once', async () => {
+    activeBg = require('./background');
+    const role = await activeBg.getRole();
+    activeBg.clearCachedSecret();
+
+    const command = {
+      commandId: 'cmd-retry-1',
+      leaseId: 'lease-retry-1',
+      browserInstanceId: role.browserInstanceId,
+      connectionGeneration: role.connectionGeneration,
+      tabId: 7,
+      windowId: 1,
+      mediaUrl: 'https://www.disneyplus.com/play/x',
+      action: 'PAUSE',
+      expectedDocumentGeneration: 'doc-7',
+      expiresAt: Date.now() + 10_000,
+    };
+
+    (global as any).chrome.tabs.get = jest.fn((tabId, cb) =>
+      cb({ id: tabId, windowId: 1, url: command.mediaUrl })
+    );
+    (global as any).chrome.tabs.sendMessage = jest.fn((tabId, message, cb) =>
+      cb({
+        commandId: message.commandId,
+        action: message.command,
+        outcome: 'CHANGED',
+        initialPlayback: 'playing',
+        finalPlayback: 'paused',
+        documentGeneration: 'doc-7',
+        mediaTargetId: 'media-7',
+      })
+    );
+
+    let acknowledgementAttempts = 0;
+    mockFetch.mockImplementation(async (url: string) => {
+      const value = String(url);
+      if (value.includes('/auth/handshake')) {
+        return { ok: true, json: async () => ({ success: true, secret: 'test-secret' }) };
+      }
+      if (value.includes('/media/commands?')) {
+        return { ok: true, json: async () => ({ success: true, commands: [command] }) };
+      }
+      if (value.includes('/media/commands/validate')) {
+        return { ok: true, json: async () => ({ success: true, executable: true }) };
+      }
+      if (value.includes('/media/commands/ack')) {
+        acknowledgementAttempts += 1;
+        return { ok: acknowledgementAttempts > 1, json: async () => ({ success: true }) };
+      }
+      return { ok: true, json: async () => ({ success: true }) };
+    });
+
+    await activeBg.pollMediaCommands();
+
+    expect((global as any).chrome.tabs.sendMessage).toHaveBeenCalledTimes(1);
+    const acknowledgementCalls = mockFetch.mock.calls.filter((call) =>
+      String(call[0]).includes('/media/commands/ack')
+    );
+    expect(acknowledgementCalls).toHaveLength(2);
+    expect(acknowledgementCalls[0][1].body).toBe(acknowledgementCalls[1][1].body);
   });
 });

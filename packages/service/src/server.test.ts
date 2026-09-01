@@ -181,6 +181,13 @@ describe('Bridge Server Pinned Origin & Security Tests', () => {
     const pause = pending.data.commands[0];
     expect(pause).toMatchObject({ action: 'PAUSE', connectionGeneration: 3, tabId: 12 });
 
+    const validation = await request('POST', '/media/commands/validate', headers, {
+      commandId: pause.commandId,
+      browserInstanceId: 'brave-media',
+      connectionGeneration: 3,
+    });
+    expect(validation.data).toEqual({ success: true, executable: true });
+
     const ack = await request('POST', '/media/commands/ack', headers, {
       commandId: pause.commandId,
       browserInstanceId: 'brave-media',
@@ -237,4 +244,30 @@ describe('Bridge Server Pinned Origin & Security Tests', () => {
     expect(invalid.statusCode).toBe(400);
     expect(invalid.data.error).toBe('invalid_media_command_ack');
   });
+
+  it('keeps command validation and override evidence authenticated and typed', async () => {
+    const headers = {
+      Origin: ALLOWED_EXTENSION_ORIGIN,
+      'Content-Type': 'application/json',
+      'X-Bridge-Secret': secretStore.getSecret(),
+    };
+    const invalidValidation = await request('POST', '/media/commands/validate', headers, {
+      commandId: 'missing-fields',
+    });
+    expect(invalidValidation.statusCode).toBe(400);
+    expect(invalidValidation.data.error).toBe('invalid_media_command_validation');
+
+    const unauthorizedOverride = await request('POST', '/media/override', {
+      Origin: ALLOWED_EXTENSION_ORIGIN,
+      'Content-Type': 'application/json',
+    }, {});
+    expect(unauthorizedOverride.statusCode).toBe(401);
+
+    const invalidOverride = await request('POST', '/media/override', headers, {
+      browserInstanceId: 'brave-media',
+    });
+    expect(invalidOverride.statusCode).toBe(400);
+    expect(invalidOverride.data.error).toBe('invalid_media_override');
+  });
+
 });
