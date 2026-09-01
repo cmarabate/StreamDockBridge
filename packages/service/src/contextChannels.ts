@@ -154,6 +154,10 @@ export const SOURCE_TTL_MS = 90_000;
 
 export type SystemMediaContextReader = (now?: number) => VoiceMediaContextSnapshot | null;
 
+function normalizeSourceLabel(value: string): string {
+  return value.trim().toLowerCase();
+}
+
 export class ContextChannelStore {
   private sources = new Map<string, SourceState>();
   private channels = new Map<ContextChannel, ChannelState>();
@@ -342,6 +346,17 @@ export class ContextChannelStore {
     return this.channels.get(channel) ?? null;
   }
 
+  /**
+   * The browser's raw page projection for URL/tab/window consumers.
+   *
+   * For MEDIA this is not authoritative media identity. Streaming DOM titles
+   * are retained only so URL-oriented features can keep their browser context.
+   */
+  getBrowserRecord(channel: 'media' | 'page', now = Date.now()): ContextRecord | null {
+    const state = this.get(channel, now);
+    return state ? (state.payload as ContextRecord) : null;
+  }
+
   getRecord(channel: 'media' | 'page', now = Date.now()): ContextRecord | null {
     const state = this.get(channel, now);
     if (!state) return null;
@@ -350,20 +365,52 @@ export class ContextChannelStore {
     if (channel !== 'media') return record;
 
     /**
-     * VoiceMediaBridge is the canonical source for current media identity.
-     * StreamDockBridge keeps the browser URL/tab projection because lookups and
-     * transcription still need it, but the work title is overlaid from GSMTC at
-     * read time so a stale/generic streaming-page title cannot poison a hardware
-     * search key. This is observation only; no transport command crosses here.
+     * VoiceMediaBridge/GSMTC is the sole authority for current media identity
+     * and playback state. The browser projection contributes only URL/tab/window
+     * context. If GSMTC cannot prove a title for the same browser owner, leave
+     * canonicalTitle empty so lookup actions fail closed instead of searching a
+     * plausible-looking streaming-site chrome string.
      */
     const systemMedia = this.systemMediaContext(now);
-    if (!systemMedia?.title) return record;
+    const owner = this.sources.get(state.browserInstanceId);
+    const sourceMatchesOwner =
+      !!systemMedia &&
+      !!owner &&
+      [owner.browserFamily, owner.displayName]
+        .map(normalizeSourceLabel)
+        .includes(normalizeSourceLabel(systemMedia.source));
+
+    if (!systemMedia?.title || !sourceMatchesOwner) {
+      return {
+        ...record,
+        rawTitle: '',
+        documentTitle: '',
+        ogTitle: '',
+        twitterTitle: '',
+        jsonLdTitle: '',
+        jsonLdSeriesTitle: '',
+        canonicalTitle: '',
+        playbackState: undefined,
+      };
+    }
 
     const canonicalTitle = deriveCanonicalTitle({
       documentTitle: systemMedia.title,
       rawTitle: systemMedia.title,
     });
-    if (!canonicalTitle) return record;
+    if (!canonicalTitle) {
+      return {
+        ...record,
+        rawTitle: '',
+        documentTitle: '',
+        ogTitle: '',
+        twitterTitle: '',
+        jsonLdTitle: '',
+        jsonLdSeriesTitle: '',
+        canonicalTitle: '',
+        playbackState: systemMedia.playbackState,
+      };
+    }
 
     return {
       ...record,
@@ -374,7 +421,7 @@ export class ContextChannelStore {
       jsonLdTitle: '',
       jsonLdSeriesTitle: '',
       canonicalTitle,
-      playbackState: systemMedia.playbackState ?? record.playbackState,
+      playbackState: systemMedia.playbackState,
     };
   }
 
