@@ -1,4 +1,6 @@
 import { ContextRecord } from './contextStore';
+import { deriveCanonicalTitle } from './titleCleaner';
+import { VoiceMediaContextSnapshot, voiceMediaContext } from './voiceMediaContext';
 
 /**
  * Who is allowed to say what the user is currently looking at.
@@ -150,9 +152,16 @@ export type ObserveResult =
  */
 export const SOURCE_TTL_MS = 90_000;
 
+export type SystemMediaContextReader = (now?: number) => VoiceMediaContextSnapshot | null;
+
 export class ContextChannelStore {
   private sources = new Map<string, SourceState>();
   private channels = new Map<ContextChannel, ChannelState>();
+
+  constructor(
+    private readonly systemMediaContext: SystemMediaContextReader = (now) =>
+      voiceMediaContext.read(now)
+  ) {}
 
   /**
    * Register or refresh a source.
@@ -335,7 +344,38 @@ export class ContextChannelStore {
 
   getRecord(channel: 'media' | 'page', now = Date.now()): ContextRecord | null {
     const state = this.get(channel, now);
-    return state ? (state.payload as ContextRecord) : null;
+    if (!state) return null;
+
+    const record = state.payload as ContextRecord;
+    if (channel !== 'media') return record;
+
+    /**
+     * VoiceMediaBridge is the canonical source for current media identity.
+     * StreamDockBridge keeps the browser URL/tab projection because lookups and
+     * transcription still need it, but the work title is overlaid from GSMTC at
+     * read time so a stale/generic streaming-page title cannot poison a hardware
+     * search key. This is observation only; no transport command crosses here.
+     */
+    const systemMedia = this.systemMediaContext(now);
+    if (!systemMedia?.title) return record;
+
+    const canonicalTitle = deriveCanonicalTitle({
+      documentTitle: systemMedia.title,
+      rawTitle: systemMedia.title,
+    });
+    if (!canonicalTitle) return record;
+
+    return {
+      ...record,
+      rawTitle: systemMedia.title,
+      documentTitle: systemMedia.title,
+      ogTitle: '',
+      twitterTitle: '',
+      jsonLdTitle: '',
+      jsonLdSeriesTitle: '',
+      canonicalTitle,
+      playbackState: systemMedia.playbackState ?? record.playbackState,
+    };
   }
 
   getProject(now = Date.now()): ProjectContext | null {
