@@ -541,6 +541,19 @@ export class VoiceCoordinator {
     ) {
       return false;
     }
+
+    // A command minted from a superseded media publication cannot become
+    // executable again, even if an old worker is still finishing an in-flight
+    // poll. The fresh worker must first publish a fresh channel generation.
+    const media = this.contextChannels.get('media');
+    if (
+      !media ||
+      media.browserInstanceId !== command.browserInstanceId ||
+      media.connectionGeneration !== command.connectionGeneration ||
+      media.tabId !== command.tabId
+    ) {
+      return false;
+    }
     if (command.action === 'RESUME') {
       return !!(
         this.activeSessions.size === 0 &&

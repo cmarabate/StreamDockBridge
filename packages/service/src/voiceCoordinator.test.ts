@@ -307,6 +307,34 @@ describe('VoiceCoordinator pause ownership', () => {
     expect(coordinator.getPendingCommands('brave-media')).toHaveLength(0);
   });
 
+  it('rejects generation N commands and targets a fresh session at N+1', () => {
+    seedMedia();
+    const pauseN = startAndDeliver('sess-n');
+    expect(coordinator.isMediaCommandExecutable(pauseN.commandId, 'brave-media', 4)).toBe(true);
+
+    channels.registerSource({ ...braveSource, connectionGeneration: 5 });
+    expect(channels.get('media')).toBeNull();
+    expect(coordinator.isMediaCommandExecutable(pauseN.commandId, 'brave-media', 4)).toBe(false);
+    expect(coordinator.isMediaCommandExecutable(pauseN.commandId, 'brave-media', 5)).toBe(false);
+
+    expect(acknowledge(pauseN, 'STALE_TARGET', 'unknown', 'unknown').actionTaken)
+      .toBe('pause_ack_stale_target_no_ownership');
+    expect(
+      coordinator.handleVoiceLifecycle('VOICE_INPUT_ENDED', chromeSource, 10, 'sess-n')
+        .actionTaken
+    ).toBe('pre_paused_or_unconfirmed_media_not_resumed');
+
+    seedMedia({ source: { ...braveSource, connectionGeneration: 5 }, sequence: 1 });
+    const pauseNext = startAndDeliver('sess-next');
+    expect(pauseNext).toMatchObject({
+      action: 'PAUSE',
+      browserInstanceId: 'brave-media',
+      connectionGeneration: 5,
+      expectedDocumentGeneration: 'doc-a',
+    });
+    expect(coordinator.isMediaCommandExecutable(pauseNext.commandId, 'brave-media', 5)).toBe(true);
+  });
+
   it('keeps media paused until every distinct producer ends', () => {
     seedMedia();
     const pause = startAndDeliver();

@@ -164,6 +164,26 @@ export class ContextChannelStore {
     const known = this.sources.get(identity.browserInstanceId);
     if (known && identity.connectionGeneration < known.connectionGeneration) return false;
 
+    /**
+     * A new worker lifetime is a new authority boundary. Its predecessor's
+     * payloads are evidence from a dead connection, not ownership that can be
+     * inherited merely because the installation id stayed the same.
+     *
+     * Delete instead of rewriting: the new worker must publish what it can
+     * observe now before any channel becomes authoritative again.
+     */
+    if (known && identity.connectionGeneration > known.connectionGeneration) {
+      for (const channel of CONTEXT_CHANNELS) {
+        const state = this.channels.get(channel);
+        if (
+          state?.browserInstanceId === identity.browserInstanceId &&
+          state.connectionGeneration < identity.connectionGeneration
+        ) {
+          this.channels.delete(channel);
+        }
+      }
+    }
+
     this.sources.set(identity.browserInstanceId, {
       ...identity,
       lastSeen: now,

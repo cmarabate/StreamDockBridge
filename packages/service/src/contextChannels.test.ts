@@ -290,6 +290,82 @@ describe('a source going away', () => {
   });
 });
 
+describe('connection generation handoff', () => {
+  it('invalidates old channel claims when a higher worker generation registers', () => {
+    const store = new ContextChannelStore();
+    const generationN = source(BRAVE, 'MEDIA_BROWSER', 7);
+    store.observe(observation(generationN, 'media', record('Regular Show')));
+    expect(store.get('media')).toMatchObject({
+      browserInstanceId: BRAVE,
+      connectionGeneration: 7,
+    });
+
+    expect(store.registerSource(source(BRAVE, 'MEDIA_BROWSER', 8))).toBe(true);
+    expect(store.get('media')).toBeNull();
+    expect(store.listSources().find((entry) => entry.browserInstanceId === BRAVE))
+      .toMatchObject({ connectionGeneration: 8, connected: true });
+  });
+
+  it('keeps ownership during a same-generation heartbeat', () => {
+    const store = new ContextChannelStore();
+    const brave = source(BRAVE, 'MEDIA_BROWSER', 7);
+    store.observe(observation(brave, 'media', record('Regular Show')));
+
+    expect(store.registerSource(brave)).toBe(true);
+    expect(store.get('media')).toMatchObject({
+      browserInstanceId: BRAVE,
+      connectionGeneration: 7,
+    });
+  });
+
+  it('does not let an older generation reclaim a freshly published channel', () => {
+    const store = new ContextChannelStore();
+    const current = source(BRAVE, 'MEDIA_BROWSER', 8);
+    store.observe(observation(current, 'media', record('Episode B')));
+
+    const old = source(BRAVE, 'MEDIA_BROWSER', 7);
+    expect(store.registerSource(old)).toBe(false);
+    expect(store.observe(observation(old, 'media', record('Episode A')))).toEqual({
+      accepted: false,
+      reason: 'stale_connection',
+    });
+    expect(store.get('media')).toMatchObject({
+      connectionGeneration: 8,
+      payload: expect.objectContaining({ canonicalTitle: 'Episode B' }),
+    });
+  });
+
+  it('recovers Brave media and Chrome work channels independently', () => {
+    const store = new ContextChannelStore();
+    const braveN = source(BRAVE, 'MEDIA_BROWSER', 3);
+    const chromeN = source(CHROME, 'WORK_BROWSER', 11);
+    store.observe(observation(braveN, 'media', record('Regular Show')));
+    store.observe(observation(chromeN, 'page', record('ChatGPT')));
+    store.observe(
+      observation(chromeN, 'project', {
+        projectKey: 'streamdockbridge',
+        projectName: 'StreamDockBridge',
+        evidence: 'test',
+      })
+    );
+
+    const braveNext = source(BRAVE, 'MEDIA_BROWSER', 4);
+    store.registerSource(braveNext);
+    expect(store.get('media')).toBeNull();
+    expect(store.get('page')).toMatchObject({ connectionGeneration: 11 });
+    expect(store.get('project')).toMatchObject({ connectionGeneration: 11 });
+    store.observe(observation(braveNext, 'media', record('Regular Show')));
+
+    const chromeNext = source(CHROME, 'WORK_BROWSER', 12);
+    store.registerSource(chromeNext);
+    expect(store.get('media')).toMatchObject({ connectionGeneration: 4 });
+    expect(store.get('page')).toBeNull();
+    expect(store.get('project')).toBeNull();
+    store.observe(observation(chromeNext, 'page', record('ChatGPT')));
+    expect(store.get('page')).toMatchObject({ connectionGeneration: 12 });
+  });
+});
+
 describe('mode changes', () => {
   /** Switching a browser to DISABLED must hand back what it owns. */
   it('drops channels a source is no longer entitled to publish', () => {

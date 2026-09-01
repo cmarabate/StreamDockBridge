@@ -320,6 +320,42 @@ describe('liveness is not content', () => {
     expect(res.json.owned).toEqual([]);
   });
 
+  it('requires a higher-generation worker to republish before it owns media', async () => {
+    await publish(BRAVE, 'MEDIA_BROWSER', 'media', REGULAR_SHOW.title, REGULAR_SHOW.url);
+
+    const nextSource = {
+      browserInstanceId: BRAVE,
+      browserFamily: 'brave',
+      displayName: 'Brave Personal',
+      mode: 'MEDIA_BROWSER',
+      connectionGeneration: 2,
+    };
+    const handoff = await authed('POST', '/sources/heartbeat', { source: nextSource });
+    expect(handoff.json).toMatchObject({ success: true, accepted: true, owned: [] });
+    expect(contextChannels.get('media')).toBeNull();
+
+    const fresh = await authed('POST', '/context', {
+      source: nextSource,
+      channel: 'media',
+      observationSequence: 1,
+      documentTitle: REGULAR_SHOW.title,
+      rawTitle: REGULAR_SHOW.title,
+      url: REGULAR_SHOW.url,
+      hostname: new URL(REGULAR_SHOW.url).hostname,
+      playbackState: 'playing',
+      documentGeneration: 'doc-next',
+      tabId: 1,
+      windowId: 1,
+      timestamp: Date.now(),
+    });
+    expect(fresh.json.success).toBe(true);
+    expect(contextChannels.get('media')).toMatchObject({ connectionGeneration: 2 });
+
+    const sameGeneration = await authed('POST', '/sources/heartbeat', { source: nextSource });
+    expect(sameGeneration.json.owned).toEqual(['media']);
+    expect(contextChannels.get('media')).toMatchObject({ connectionGeneration: 2 });
+  });
+
   it('requires the secret to heartbeat', async () => {
     const res = await call('POST', '/sources/heartbeat', { source: { browserInstanceId: BRAVE } });
     expect(res.status).toBe(401);

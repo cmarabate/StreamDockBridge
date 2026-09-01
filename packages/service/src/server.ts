@@ -567,7 +567,10 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
           // restart is noticed without a second round trip.
           const owned = CONTEXT_CHANNELS.filter((c) => {
             const state = contextChannels.get(c);
-            return state ? state.browserInstanceId === source.browserInstanceId : false;
+            return state
+              ? state.browserInstanceId === source.browserInstanceId &&
+                  state.connectionGeneration === source.connectionGeneration
+              : false;
           });
           sendJson(200, { success: true, accepted, owned });
         } catch (e) {

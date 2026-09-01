@@ -538,6 +538,76 @@ describe('Extension Background Unit Tests (Single Authority Rules A-G)', () => {
       });
     });
   });
+  it('republishes after heartbeat reports no channel for the new worker generation', async () => {
+    (global as any).chrome.storage.local.get = jest.fn((_keys, cb) =>
+      cb({
+        browserInstanceId: 'brave-generation-test',
+        browserFamily: 'brave',
+        browserDisplayName: 'Brave Media',
+        browserMode: 'MEDIA_BROWSER',
+        connectionGeneration: 9,
+      })
+    );
+    (global as any).chrome.tabs.query = jest.fn((_query, cb) => cb([]));
+    mockFetch.mockImplementation(async (url: string) => {
+      if (url.endsWith('/auth/handshake')) {
+        return { ok: true, json: async () => ({ success: true, secret: 'test-secret' }) };
+      }
+      if (url.endsWith('/sources/heartbeat')) {
+        return { ok: true, json: async () => ({ success: true, accepted: true, owned: [] }) };
+      }
+      return { ok: true, json: async () => ({ success: true }) };
+    });
+    bg.invalidateRole();
+    bg.clearCachedSecret();
+    bg.getMediaTabs().clear();
+
+    await bg.heartbeatTick();
+
+    const heartbeat = mockFetch.mock.calls.find((call) =>
+      String(call[0]).endsWith('/sources/heartbeat')
+    );
+    expect(JSON.parse(heartbeat[1].body).source).toMatchObject({
+      browserInstanceId: 'brave-generation-test',
+      connectionGeneration: 10,
+      mode: 'MEDIA_BROWSER',
+    });
+    expect(
+      mockFetch.mock.calls.some((call) => String(call[0]) === 'http://127.0.0.1:17337/context')
+    ).toBe(true);
+  });
+
+  it('does not republish when the same generation still owns its channel', async () => {
+    (global as any).chrome.storage.local.get = jest.fn((_keys, cb) =>
+      cb({
+        browserInstanceId: 'brave-generation-test',
+        browserFamily: 'brave',
+        browserDisplayName: 'Brave Media',
+        browserMode: 'MEDIA_BROWSER',
+        connectionGeneration: 9,
+      })
+    );
+    mockFetch.mockImplementation(async (url: string) => {
+      if (url.endsWith('/auth/handshake')) {
+        return { ok: true, json: async () => ({ success: true, secret: 'test-secret' }) };
+      }
+      if (url.endsWith('/sources/heartbeat')) {
+        return {
+          ok: true,
+          json: async () => ({ success: true, accepted: true, owned: ['media'] }),
+        };
+      }
+      return { ok: true, json: async () => ({ success: true }) };
+    });
+    bg.invalidateRole();
+    bg.clearCachedSecret();
+
+    await bg.heartbeatTick();
+
+    expect(
+      mockFetch.mock.calls.some((call) => String(call[0]) === 'http://127.0.0.1:17337/context')
+    ).toBe(false);
+  });
 });
 
 describe('Voice session survival & playback publication', () => {
