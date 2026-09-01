@@ -241,6 +241,57 @@ describe('VoiceCoordinator pause ownership', () => {
     expect(coordinator.getPendingCommands('brave-media')).toHaveLength(0);
   });
 
+  it('starts a fresh lease for a replacement media target in the same document', () => {
+    seedMedia();
+    const pauseA = startAndDeliver('sess-a');
+    expect(acknowledge(pauseA, 'CHANGED', 'playing', 'paused', 'doc-a', 'media-1').actionTaken)
+      .toBe('pause_ack_changed_resume_authorized');
+
+    expect(
+      coordinator.handleVoiceLifecycle('VOICE_INPUT_ENDED', chromeSource, 10, 'sess-a')
+        .actionTaken
+    ).toBe('voice_ended_media_resume_queued');
+    const [resumeA] = coordinator.getPendingCommands('brave-media');
+    expect(resumeA).toMatchObject({
+      action: 'RESUME',
+      expectedDocumentGeneration: 'doc-a',
+      expectedMediaTargetId: 'media-1',
+    });
+
+    // Disney+-style SPA transition: URL and video element change, document does not.
+    seedMedia({
+      sequence: 2,
+      url: 'https://disneyplus.com/play/regular-show-next',
+      documentGeneration: 'doc-a',
+      playbackState: 'playing',
+    });
+    expect(acknowledge(resumeA, 'STALE_TARGET', 'unknown', 'unknown', 'doc-a', 'media-1').actionTaken)
+      .toBe('resume_ack_stale_target');
+    expect(coordinator.getActiveLease()).toBeNull();
+
+    const pauseB = startAndDeliver('sess-b');
+    expect(pauseB).toMatchObject({
+      action: 'PAUSE',
+      expectedDocumentGeneration: 'doc-a',
+      expectedMediaTargetId: undefined,
+      mediaUrl: 'https://disneyplus.com/play/regular-show-next',
+    });
+    expect(acknowledge(pauseB, 'CHANGED', 'playing', 'paused', 'doc-a', 'media-2').actionTaken)
+      .toBe('pause_ack_changed_resume_authorized');
+
+    expect(
+      coordinator.handleVoiceLifecycle('VOICE_INPUT_ENDED', chromeSource, 10, 'sess-b')
+        .actionTaken
+    ).toBe('voice_ended_media_resume_queued');
+    expect(coordinator.getPendingCommands('brave-media')).toEqual([
+      expect.objectContaining({
+        action: 'RESUME',
+        expectedDocumentGeneration: 'doc-a',
+        expectedMediaTargetId: 'media-2',
+      }),
+    ]);
+  });
+
   it('fails closed after the media browser worker generation changes', () => {
     seedMedia();
     const pause = startAndDeliver();

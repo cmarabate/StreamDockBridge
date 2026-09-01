@@ -182,7 +182,11 @@ export function extractPageMetadata(doc: Document): PageMetadata {
         if (hasSource || hasDuration) {
           meta.hasVideo = true;
         }
-        if (!video.paused && !video.ended && video.currentTime > 0) {
+        // `play` is observable before the first timeupdate. Requiring a
+        // positive currentTime turns a freshly autoplayed replacement video
+        // into a false "paused" snapshot, which can strand a streaming SPA
+        // after it advances to the next episode.
+        if (!video.paused && !video.ended) {
           meta.isPlaying = true;
           break;
         }

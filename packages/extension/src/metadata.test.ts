@@ -88,6 +88,34 @@ describe('extractPageMetadata JSON-LD & Title Selection', () => {
   });
 });
 
+describe('extractPageMetadata playback state', () => {
+  it('recognizes a newly playing replacement video before currentTime advances', () => {
+    const video = {
+      paused: false,
+      ended: false,
+      currentTime: 0,
+      duration: 645,
+      currentSrc: 'blob:https://www.disneyplus.com/replacement',
+      src: '',
+      querySelector: () => null,
+    };
+    const doc = {
+      title: 'Regular Show | Disney+',
+      location: { href: 'https://www.disneyplus.com/play/episode-b' },
+      querySelector: () => null,
+      querySelectorAll: (selector: string) => {
+        if (selector === 'video') return [video];
+        return [];
+      },
+    } as unknown as Document;
+
+    expect(extractPageMetadata(doc)).toMatchObject({
+      hasVideo: true,
+      isPlaying: true,
+    });
+  });
+});
+
 describe('structured series extraction', () => {
   it('reads the series a TVEpisode declares it belongs to', () => {
     expect(

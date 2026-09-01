@@ -270,6 +270,74 @@ describe('MediaPlaybackController command acknowledgements', () => {
     ).toMatchObject({ outcome: 'STALE_TARGET' });
     expect(playMock).not.toHaveBeenCalled();
   });
+
+  it('reacquires a replacement target only for a fresh voice lease', async () => {
+    const controller = new MediaPlaybackController('doc-1');
+    const pauseA = await controller.execute(pauseRequest);
+    expect(pauseA).toMatchObject({ outcome: 'CHANGED', mediaTargetId: 'media-1' });
+
+    // A streaming SPA replaces its player without replacing the document.
+    video.remove();
+    let replacementPaused = false;
+    const replacement = document.createElement('video');
+    replacement.src = 'https://example.test/episode-b.mp4';
+    document.body.appendChild(replacement);
+    Object.defineProperties(replacement, {
+      paused: { configurable: true, get: () => replacementPaused },
+      ended: { configurable: true, get: () => false },
+      currentTime: { configurable: true, get: () => 0 },
+      readyState: { configurable: true, get: () => 4 },
+      duration: { configurable: true, get: () => 100 },
+      currentSrc: { configurable: true, get: () => replacement.src },
+    });
+    replacement.getBoundingClientRect = () =>
+      ({ width: 1280, height: 720 } as DOMRect);
+    const replacementPause = jest.fn(() => {
+      replacementPaused = true;
+      replacement.dispatchEvent(new Event('pause'));
+    });
+    const replacementPlay = jest.fn(async () => {
+      replacementPaused = false;
+      replacement.dispatchEvent(new Event('play'));
+    });
+    replacement.pause = replacementPause;
+    replacement.play = replacementPlay;
+    replacement.dispatchEvent(new Event('play'));
+
+    // The old lease can never transfer its resume authority to target B.
+    expect(
+      await controller.execute({
+        commandId: 'cmd-resume-a',
+        leaseId: 'lease-1',
+        command: 'RESUME',
+        expectedDocumentGeneration: 'doc-1',
+        expectedMediaTargetId: pauseA.mediaTargetId,
+      })
+    ).toMatchObject({ outcome: 'STALE_TARGET' });
+    expect(replacementPlay).not.toHaveBeenCalled();
+
+    // A fresh voice lease performs discovery again and owns only target B.
+    const pauseB = await controller.execute({
+      commandId: 'cmd-pause-b',
+      leaseId: 'lease-2',
+      command: 'PAUSE',
+      expectedDocumentGeneration: 'doc-1',
+    });
+    expect(pauseB).toMatchObject({ outcome: 'CHANGED', mediaTargetId: 'media-2' });
+    expect(pauseB.mediaTargetId).not.toBe(pauseA.mediaTargetId);
+    expect(replacementPause).toHaveBeenCalledTimes(1);
+
+    expect(
+      await controller.execute({
+        commandId: 'cmd-resume-b',
+        leaseId: 'lease-2',
+        command: 'RESUME',
+        expectedDocumentGeneration: 'doc-1',
+        expectedMediaTargetId: pauseB.mediaTargetId,
+      })
+    ).toMatchObject({ outcome: 'CHANGED', mediaTargetId: 'media-2' });
+    expect(replacementPlay).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('MediaPlaybackController playback-state publication', () => {
