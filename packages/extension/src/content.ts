@@ -1,6 +1,7 @@
 import { extractPageMetadata, PageMetadata } from './metadata';
 import { ChatGPTVoiceObserver } from './voiceObserver';
 import { MediaPlaybackController, MediaCommandRequest } from './mediaController';
+import { MediaPlaybackReconciler } from './mediaReconciler';
 
 const documentGeneration = `document-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
@@ -9,6 +10,7 @@ export function getPageMetadata(): PageMetadata {
 }
 
 let mediaController: MediaPlaybackController | null = null;
+let mediaReconciler: MediaPlaybackReconciler | null = null;
 let voiceObserver: ChatGPTVoiceObserver | null = null;
 
 export function initContentScript(): void {
@@ -26,6 +28,18 @@ export function initContentScript(): void {
   }
 
   try {
+    const publishPlaybackChange = (isPlaying: boolean) => {
+      try {
+        chrome.runtime.sendMessage({
+          action: 'MEDIA_PLAYBACK_CHANGED',
+          isPlaying,
+          documentGeneration,
+        });
+      } catch (e) {
+        void e;
+      }
+    };
+
     // 1. Initialize Media Playback Controller
     if (!mediaController) {
       mediaController = new MediaPlaybackController(documentGeneration, (evidence) => {
@@ -34,17 +48,15 @@ export function initContentScript(): void {
         } catch (e) {
           void e;
         }
-      }, (isPlaying) => {
-        try {
-          chrome.runtime.sendMessage({
-            action: 'MEDIA_PLAYBACK_CHANGED',
-            isPlaying,
-            documentGeneration,
-          });
-        } catch (e) {
-          void e;
-        }
-      });
+      }, publishPlaybackChange);
+    }
+
+    // Edge-triggered media events are not enough for streaming SPAs: a replacement
+    // player may already be playing before its initial `play` edge is observable.
+    // Reconcile newly discovered/current media state without polling or mutation.
+    if (!mediaReconciler) {
+      mediaReconciler = new MediaPlaybackReconciler(publishPlaybackChange);
+      mediaReconciler.start();
     }
 
     // 2. Initialize Voice Observer on ChatGPT pages
@@ -109,7 +121,7 @@ export function initContentScript(): void {
 
     if (globalWin) {
       globalWin.__STREAM_DOCK_BRIDGE_CONTENT__ = {
-        version: '1.1.0',
+        version: '1.2.0',
         installedRuntimeId: currentRuntimeId,
       };
     }
