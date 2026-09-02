@@ -41,6 +41,8 @@ The StreamDockBridge **extension background worker** must not:
 
 It still observes `MEDIA_PLAYBACK_CHANGED` and republishes the Media context, because that is context observation, not transport.
 
+The extension options page no longer offers a "Pause media while dictating" setting. The `pauseMediaWhileDictating` storage key it wrote was read by nothing after the cutover, and the control was removed on 2026-09-02 as cutover residue.
+
 The StreamDockBridge **service** must not expose a voice or media transport protocol. The endpoints `POST /voice/lifecycle`, `GET /voice/status`, `GET /media/commands`, `POST /media/commands/validate`, `POST /media/commands/ack` and `POST /media/override`, and the `VoiceCoordinator` that backed them, were removed on 2026-09-01. Requests to those paths now 404.
 
 ## ContextBridge boundary

@@ -11,7 +11,7 @@ export interface ContextRecord {
   /** Series name from structured page metadata, when the page declares one. */
   jsonLdSeriesTitle: string;
   canonicalTitle: string;
-  /** Fresh playback snapshot used only to suppress an unnecessary PAUSE. */
+  /** Fresh playback snapshot published as read-only Media context state. */
   playbackState?: 'playing' | 'paused';
   /** Per-document token supplied by the content script for stale-target rejection. */
   documentGeneration?: string;

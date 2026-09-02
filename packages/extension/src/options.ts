@@ -157,16 +157,6 @@ async function main(): Promise<void> {
     });
   }
 
-  const voicePauseCheckbox = document.getElementById('pauseMediaWhileDictating') as HTMLInputElement | null;
-  if (voicePauseCheckbox) {
-    const saved = await store.get(['pauseMediaWhileDictating']);
-    voicePauseCheckbox.checked = saved.pauseMediaWhileDictating !== false; // Default true
-    voicePauseCheckbox.addEventListener('change', async () => {
-      await store.set({ pauseMediaWhileDictating: voicePauseCheckbox.checked });
-      text('saved', 'Saved.');
-    });
-  }
-
   await refreshStatus(role.browserInstanceId);
   setInterval(() => refreshStatus(role.browserInstanceId), 3000);
 }

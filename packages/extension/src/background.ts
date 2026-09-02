@@ -821,8 +821,8 @@ try {
  * Streaming SPAs repaint playback without navigating or changing titles, so
  * this is the only prompt signal the background gets. Record it in the tab
  * tracker and, when the reported tab is the current media owner, republish the
- * Media context so the service's playbackState stays authoritative. A
- * publication never queues a command, so this cannot loop.
+ * Media context so the service's playbackState stays authoritative. This is
+ * context observation only: nothing here issues media transport commands.
  */
 export async function handleMediaPlaybackChangedMessage(
   message: any,

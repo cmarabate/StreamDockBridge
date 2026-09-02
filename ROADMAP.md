@@ -951,6 +951,9 @@ extension background worker's persisted voice-session state, lifecycle forwardin
 media-override forwarding, long-poll command poller, command validation/acknowledgement, and
 `EXECUTE_MEDIA_COMMAND` dispatch.
 
+Removed on 2026-09-02 as residue of the same cutover: the extension options page's "Pause media while
+dictating" checkbox and its orphaned `pauseMediaWhileDictating` storage key, which nothing read.
+
 The path had already been severed on the browser side by the earlier content-script cutover:
 nothing in the repository still produced `VOICE_LIFECYCLE` and nothing implemented
 `EXECUTE_MEDIA_COMMAND`, so the poller generated continuous loopback traffic for a command chain
