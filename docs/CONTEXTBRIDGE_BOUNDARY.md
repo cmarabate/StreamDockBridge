@@ -42,8 +42,9 @@ and `contextBridge.test.ts` fails if one ever does.
 
 ```
 schemaVersion : 'contextbridge.snapshot.v1'
-readAt        : number          — one read instant for the whole snapshot
-channels      : { media, page } — each an evidence entry, or null
+readAt        : number            — one read instant for the whole snapshot
+sources       : ContextSourceV1[] — every source connected at readAt (CB-0A.1)
+channels      : { media, page }   — each an evidence entry, or null
 ```
 
 Each evidence entry is:
@@ -75,6 +76,40 @@ Notes on the fields that carry the boundary:
 - There is **no `project` channel.** The service's PROJECT channel carries an
   AgentOS-derived registry key — that is identity, not evidence, and it is
   therefore outside this contract.
+
+### Connected source inventory (CB-0A.1)
+
+`sources` is the set of browser installations considered connected at `readAt`,
+each in the same `ContextSourceV1` shape a channel's `source` uses, ordered by
+`sourceInstanceId`.
+
+- **Why it exists: ambiguity detection.** PAGE is the active tab of one
+  installation's last-focused window, but a second installation of the same
+  browser family — another Chrome profile — can be connected at the same
+  instant and can republish during MV3 startup or recovery. `browserFamily` is
+  descriptive only; two profiles are two sources. A downstream consumer that
+  correlates OS foreground by browser family needs the full connected set to
+  notice that the correlation is ambiguous and fail closed. It is inventory
+  for that consumer, not a verdict.
+- **All roles are listed**, `DISABLED` included. Which roles matter is the
+  consumer's decision.
+- **Only connected sources appear.** Disconnected, TTL-expired and superseded
+  sources are omitted, by the same test that omits their channels. A restarted
+  installation appears once, at its newest connection generation.
+- **A channel's owner is always listed.** When `channels.page` or
+  `channels.media` is present, its `source.sourceInstanceId` is an entry in
+  `sources`, and channel evidence itself is unchanged.
+- **No `lastSeen`**, no secret, no page content, no `registryKey`, no
+  `ProjectContext`, no AgentOS data, no HWND, and no "current browser" field.
+  Presence in the snapshot is the liveness statement; a second clock would only
+  be able to disagree with `readAt`.
+- **ContextBridge still does not know OS foreground and does not choose which
+  browser is current.** It lists who is connected; a consumer decides what that
+  means. `/sources` remains a service debug route and is **not** part of the
+  consumer contract — the inventory lives inside the authenticated, versioned
+  snapshot so a consumer never has to stitch two reads together.
+- Additive within `contextbridge.snapshot.v1`: a v1 reader that ignores
+  `sources` sees exactly what it saw before.
 
 ## Provider evidence: ChatGPT
 

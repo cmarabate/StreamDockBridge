@@ -33,11 +33,14 @@ export type ContextEvidenceChannel = 'media' | 'page';
 export const CONTEXT_EVIDENCE_CHANNELS: ContextEvidenceChannel[] = ['media', 'page'];
 
 /**
- * Who published this observation.
+ * A connected browser installation: who published an observation, and who else
+ * is connected and could have.
  *
  * `role` is the browser's declared publication role (its channel mode). It says
  * what that browser is allowed to publish — not that its window is in front.
  * ContextBridge makes no claim about OS foreground or window handles.
+ * `browserFamily` is descriptive; it does not make two installations of the
+ * same family one source.
  */
 export interface ContextSourceV1 {
   sourceInstanceId: string;
@@ -83,12 +86,36 @@ export interface ContextSnapshotV1 {
   schemaVersion: typeof CONTEXT_SNAPSHOT_SCHEMA_VERSION;
   /** One read instant for the entire snapshot, so ages cannot disagree. */
   readAt: number;
+  /**
+   * Every source considered connected at `readAt`, in `sourceInstanceId` order.
+   *
+   * This is inventory, not a decision. A PAGE observation names the active tab
+   * of ONE installation's last-focused window, but a second installation of
+   * the same browser family — another Chrome profile, say — can be connected at
+   * the same instant and can republish during MV3 startup or recovery. The
+   * family string is descriptive only; two profiles are two sources. A
+   * downstream consumer that correlates OS foreground by browser family needs
+   * the whole connected set to notice when that correlation is ambiguous and
+   * fail closed, so the set travels inside the authenticated snapshot rather
+   * than being reconstructed from a separate route.
+   *
+   * All roles are listed, DISABLED included; which roles matter is the
+   * consumer's call. Disconnected, expired and superseded sources are omitted.
+   * When a channel is present, its `source.sourceInstanceId` is always one of
+   * these entries. Nothing here says which browser is "current".
+   */
+  sources: ContextSourceV1[];
   channels: Record<ContextEvidenceChannel, ContextEvidenceV1 | null>;
 }
 
-function sourceFor(sources: SourceState[], sourceInstanceId: string): ContextSourceV1 | null {
-  const found = sources.find((candidate) => candidate.browserInstanceId === sourceInstanceId);
-  if (!found || !found.connected) return null;
+/**
+ * The source allowlist, written as a construction rather than a deletion.
+ *
+ * `lastSeen` and `connected` stay behind: liveness is already expressed by
+ * presence in the snapshot, and a timestamp here would be a second clock that
+ * could disagree with `readAt`.
+ */
+function sourceV1(found: SourceState): ContextSourceV1 {
   return {
     sourceInstanceId: found.browserInstanceId,
     browserFamily: found.browserFamily,
@@ -96,6 +123,16 @@ function sourceFor(sources: SourceState[], sourceInstanceId: string): ContextSou
     role: found.mode,
     connectionGeneration: found.connectionGeneration,
   };
+}
+
+function connectedSources(sources: SourceState[]): ContextSourceV1[] {
+  return sources.filter((candidate) => candidate.connected).map(sourceV1);
+}
+
+function sourceFor(sources: SourceState[], sourceInstanceId: string): ContextSourceV1 | null {
+  const found = sources.find((candidate) => candidate.browserInstanceId === sourceInstanceId);
+  if (!found || !found.connected) return null;
+  return sourceV1(found);
 }
 
 function text(value: unknown): string {
@@ -159,6 +196,12 @@ export function buildContextSnapshotV1(
   return {
     schemaVersion: CONTEXT_SNAPSHOT_SCHEMA_VERSION,
     readAt,
+    /**
+     * Same `sources` read as the channels above, so a channel owner is by
+     * construction an inventory entry: `sourceFor` and `connectedSources` apply
+     * the same connectedness test to the same list at the same instant.
+     */
+    sources: connectedSources(sources),
     channels: {
       media: describe('media'),
       page: describe('page'),
