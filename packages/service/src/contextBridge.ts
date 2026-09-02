@@ -1,11 +1,11 @@
 import {
   ContextChannel,
   ContextChannelStore,
-  ContextRecord,
   ProjectContext,
   SourceState,
   contextChannels,
 } from './contextChannels';
+import { ContextRecord } from './contextStore';
 
 export const CONTEXTBRIDGE_SNAPSHOT_VERSION = 'contextbridge-snapshot-1' as const;
 
@@ -67,7 +67,10 @@ export function buildContextBridgeSnapshot(
 ): ContextBridgeSnapshotV1 {
   const sources = store.listSources(readAt);
 
-  const describe = <T>(channel: ContextChannel, value: T | null): ContextBridgeChannelSnapshot<T> | null => {
+  const describe = <T>(
+    channel: ContextChannel,
+    value: T | null
+  ): ContextBridgeChannelSnapshot<T> | null => {
     const state = store.get(channel, readAt);
     if (!state || value === null) return null;
     const owner = ownerFor(sources, state.browserInstanceId);
