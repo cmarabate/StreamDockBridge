@@ -1,26 +1,11 @@
 import { ContextRecord } from './contextStore';
-
-/**
- * Who is allowed to say what the user is currently looking at.
- *
- * The original model was a single global record, so whichever browser posted
- * last won. That worked while exactly one browser was installed and breaks the
- * moment a second one is: Brave's media selection and Chrome's work page would
- * overwrite each other continuously.
- *
- * So context is split into independent CHANNELS, each with its own owner. A
- * media observation can never disturb the page channel, and vice versa. Every
- * observation carries enough identity to be judged rather than simply believed.
- */
+import { deriveCanonicalTitle } from './titleCleaner';
+import { VoiceMediaContextSnapshot } from './voiceMediaContext';
 
 export type ContextChannel = 'media' | 'page' | 'project';
 
 export const CONTEXT_CHANNELS: ContextChannel[] = ['media', 'page', 'project'];
 
-/**
- * What a browser installation is for. Set per installation, so the same
- * extension package behaves differently in Brave and in Chrome.
- */
 export type BrowserMode = 'MEDIA_BROWSER' | 'WORK_BROWSER' | 'HYBRID' | 'DISABLED';
 
 export const BROWSER_MODES: BrowserMode[] = [
@@ -30,7 +15,6 @@ export const BROWSER_MODES: BrowserMode[] = [
   'DISABLED',
 ];
 
-/** Which channels a mode is permitted to publish. */
 export function channelsFor(mode: BrowserMode): ContextChannel[] {
   switch (mode) {
     case 'MEDIA_BROWSER':
@@ -49,42 +33,21 @@ export function mayPublish(mode: BrowserMode, channel: ContextChannel): boolean 
   return channelsFor(mode).includes(channel);
 }
 
-/**
- * Whether this mode exists specifically to serve this channel.
- *
- * HYBRID publishes everything but is dedicated to nothing, so it yields to a
- * browser the owner has actually assigned the job.
- */
 export function isDedicatedTo(mode: BrowserMode, channel: ContextChannel): boolean {
   if (mode === 'MEDIA_BROWSER') return channel === 'media';
   if (mode === 'WORK_BROWSER') return channel === 'page' || channel === 'project';
   return false;
 }
 
-/**
- * A browser installation.
- *
- * `browserInstanceId` is ROUTING identity, not authentication — it says which
- * installation an observation came from so channels can be kept apart. The
- * secret gate on POST /context is what actually authorizes the write, and that
- * is unchanged.
- */
 export interface SourceIdentity {
   browserInstanceId: string;
-  /** Descriptive only: brave, chrome, edge… Never used for routing. */
   browserFamily: string;
   displayName: string;
   mode: BrowserMode;
-  /**
-   * Bumped each time the extension's service worker starts. An observation
-   * from an older generation is a message from a connection that no longer
-   * exists, and is refused.
-   */
   connectionGeneration: number;
 }
 
 export interface ProjectContext {
-  /** AgentOS registryKey when identity resolved, else null. */
   projectKey: string | null;
   projectName: string;
   localRepoPath?: string | null;
@@ -95,21 +58,17 @@ export interface ProjectContext {
   vercelProject?: string;
   supabaseProjectRef?: string;
   projectDomain?: string;
-  /** What proved it, e.g. 'chatgpt-project' or 'github-url'. */
   evidence: string;
 }
 
-/** The payload a channel carries. Media and page carry a page record. */
 export type ChannelPayload = ContextRecord | ProjectContext;
 
 export interface Observation {
   source: SourceIdentity;
   channel: ContextChannel;
-  /** null releases the channel: this source no longer has anything for it. */
   payload: ChannelPayload | null;
   tabId: number;
   windowId: number;
-  /** Monotonic per source. Reordered or replayed observations are refused. */
   observationSequence: number;
   observedAt: number;
 }
@@ -141,37 +100,38 @@ export type ObserveResult =
         | 'lost_arbitration';
     };
 
-/**
- * How long a silent source keeps its channels.
- *
- * A browser that exits without warning must not own a channel forever, but the
- * window has to be comfortably longer than the extension's own heartbeat or a
- * quiet browser would keep dropping and reclaiming its own channel.
- */
 export const SOURCE_TTL_MS = 90_000;
+
+export type SystemMediaContextReader = (now?: number) => VoiceMediaContextSnapshot | null;
+
+function normalizeSourceLabel(value: string): string {
+  return value.trim().toLowerCase();
+}
 
 export class ContextChannelStore {
   private sources = new Map<string, SourceState>();
   private channels = new Map<ContextChannel, ChannelState>();
 
   /**
-   * Register or refresh a source.
+   * The authoritative system-media reader is deliberately opt-in.
    *
-   * A HIGHER generation supersedes: the extension restarted, so anything still
-   * in flight from before belongs to a dead connection.
+   * Pure channel stores, unit tests, and server-library consumers retain raw
+   * browser observations. The shipped StreamDockBridge service enables the
+   * VoiceMediaBridge/GSMTC overlay explicitly from index.ts. This prevents a
+   * missing local native host from silently changing the semantics of every
+   * in-memory ContextChannelStore while still making production media lookups
+   * fail closed when GSMTC cannot prove media identity.
    */
+  constructor(private systemMediaContext: SystemMediaContextReader | null = null) {}
+
+  setSystemMediaContextReader(reader: SystemMediaContextReader | null): void {
+    this.systemMediaContext = reader;
+  }
+
   registerSource(identity: SourceIdentity, now = Date.now()): boolean {
     const known = this.sources.get(identity.browserInstanceId);
     if (known && identity.connectionGeneration < known.connectionGeneration) return false;
 
-    /**
-     * A new worker lifetime is a new authority boundary. Its predecessor's
-     * payloads are evidence from a dead connection, not ownership that can be
-     * inherited merely because the installation id stayed the same.
-     *
-     * Delete instead of rewriting: the new worker must publish what it can
-     * observe now before any channel becomes authoritative again.
-     */
     if (known && identity.connectionGeneration > known.connectionGeneration) {
       for (const channel of CONTEXT_CHANNELS) {
         const state = this.channels.get(channel);
@@ -190,11 +150,6 @@ export class ContextChannelStore {
       connected: true,
     });
 
-    /**
-     * A source that can no longer publish a channel must not keep owning it.
-     * Switching a browser to DISABLED, or from HYBRID to MEDIA_BROWSER, has to
-     * hand back what it is no longer entitled to.
-     */
     for (const channel of CONTEXT_CHANNELS) {
       const state = this.channels.get(channel);
       if (!state || state.browserInstanceId !== identity.browserInstanceId) continue;
@@ -208,7 +163,6 @@ export class ContextChannelStore {
     const { source, channel } = observation;
 
     if (!mayPublish(source.mode, channel)) {
-      // Still refresh liveness — the source is alive, just not for this channel.
       this.registerSource(source, now);
       return { accepted: false, reason: 'mode_forbids_channel' };
     }
@@ -223,15 +177,14 @@ export class ContextChannelStore {
     const current = this.channels.get(channel);
 
     if (current && current.browserInstanceId === source.browserInstanceId) {
-      // Same source: sequence must advance, or this is a replay.
-      if (current.connectionGeneration === source.connectionGeneration &&
-          observation.observationSequence <= current.observationSequence) {
+      if (
+        current.connectionGeneration === source.connectionGeneration &&
+        observation.observationSequence <= current.observationSequence
+      ) {
         return { accepted: false, reason: 'stale_observation' };
       }
     } else if (current) {
-      // A different source holds the channel.
       if (observation.payload === null) {
-        // Only the owner may release a channel.
         return { accepted: false, reason: 'not_owner' };
       }
       if (!this.canTakeOver(current, observation, now)) {
@@ -257,56 +210,22 @@ export class ContextChannelStore {
     return { accepted: true, channel, released: false };
   }
 
-  /**
-   * Whether a challenger takes a channel from its current owner.
-   *
-   * Deterministic on purpose — never "whichever packet arrived last". The
-   * intended setup (Brave media, Chrome work) never competes for a channel at
-   * all; this exists so that when two sources DO claim one, the outcome is
-   * predictable and does not flap.
-   */
   private canTakeOver(current: ChannelState, observation: Observation, now: number): boolean {
     const owner = this.sources.get(current.browserInstanceId);
-
-    // An owner that has gone quiet has forfeited the channel.
     if (!owner || !owner.connected || now - owner.lastSeen > SOURCE_TTL_MS) return true;
 
-    /**
-     * A browser configured FOR this channel outranks one that merely also does
-     * it.
-     *
-     * The owner runs Brave as a dedicated media browser and Chrome for work. If
-     * Chrome is left on the default HYBRID it competes for media, and with pure
-     * recency it wins whenever it happens to be on a page with a video — so a
-     * media key reads Chrome instead of Brave. Saying what a browser is for
-     * should settle that, rather than whichever tab was touched last.
-     */
     const challengerDedicated = isDedicatedTo(observation.source.mode, observation.channel);
     const ownerDedicated = isDedicatedTo(owner.mode, observation.channel);
     if (challengerDedicated !== ownerDedicated) return challengerDedicated;
 
-    /**
-     * Neither is dedicated — both are on the default HYBRID, which publishes
-     * everything and is assigned to nothing.
-     *
-     * A general browser may CLAIM a free channel, which is what keeps a
-     * single-browser setup working, but it may not TAKE one from a live owner.
-     * Recency here would mean a second browser opening any page with a video
-     * seizes media from the one actually playing something, which is the
-     * original defect wearing a different hat. Whoever holds it keeps it until
-     * they release it or go quiet.
-     */
     if (!challengerDedicated) return false;
 
-    // Between two dedicated browsers, the more recent user activity wins…
     if (observation.observedAt > current.observedAt) return true;
     if (observation.observedAt < current.observedAt) return false;
 
-    // …and an exact tie is broken by id so the result never depends on timing.
     return observation.source.browserInstanceId > current.browserInstanceId;
   }
 
-  /** Mark a source gone. Its channels are released immediately. */
   disconnect(browserInstanceId: string): void {
     const source = this.sources.get(browserInstanceId);
     if (source) source.connected = false;
@@ -316,7 +235,6 @@ export class ContextChannelStore {
     }
   }
 
-  /** Drop channels whose owner has gone silent. Called on every read. */
   private expire(now: number): void {
     for (const channel of CONTEXT_CHANNELS) {
       const state = this.channels.get(channel);
@@ -333,9 +251,78 @@ export class ContextChannelStore {
     return this.channels.get(channel) ?? null;
   }
 
-  getRecord(channel: 'media' | 'page', now = Date.now()): ContextRecord | null {
+  /** Browser URL/tab/window projection without system-media enrichment. */
+  getBrowserRecord(channel: 'media' | 'page', now = Date.now()): ContextRecord | null {
     const state = this.get(channel, now);
     return state ? (state.payload as ContextRecord) : null;
+  }
+
+  getRecord(channel: 'media' | 'page', now = Date.now()): ContextRecord | null {
+    const state = this.get(channel, now);
+    if (!state) return null;
+
+    const record = state.payload as ContextRecord;
+    if (channel !== 'media' || !this.systemMediaContext) return record;
+
+    /**
+     * In the shipped service, VoiceMediaBridge/GSMTC is the sole authority for
+     * media identity and playback state. Browser media observations contribute
+     * URL/tab/window context only. If VMB cannot prove media for the same browser
+     * owner, media searches fail closed rather than using site chrome as a title.
+     */
+    const systemMedia = this.systemMediaContext(now);
+    const owner = this.sources.get(state.browserInstanceId);
+    const sourceMatchesOwner =
+      !!systemMedia &&
+      !!owner &&
+      [owner.browserFamily, owner.displayName]
+        .map(normalizeSourceLabel)
+        .includes(normalizeSourceLabel(systemMedia.source));
+
+    if (!systemMedia?.title || !sourceMatchesOwner) {
+      return {
+        ...record,
+        rawTitle: '',
+        documentTitle: '',
+        ogTitle: '',
+        twitterTitle: '',
+        jsonLdTitle: '',
+        jsonLdSeriesTitle: '',
+        canonicalTitle: '',
+        playbackState: undefined,
+      };
+    }
+
+    const canonicalTitle = deriveCanonicalTitle({
+      documentTitle: systemMedia.title,
+      rawTitle: systemMedia.title,
+    });
+
+    if (!canonicalTitle) {
+      return {
+        ...record,
+        rawTitle: '',
+        documentTitle: '',
+        ogTitle: '',
+        twitterTitle: '',
+        jsonLdTitle: '',
+        jsonLdSeriesTitle: '',
+        canonicalTitle: '',
+        playbackState: systemMedia.playbackState,
+      };
+    }
+
+    return {
+      ...record,
+      rawTitle: systemMedia.title,
+      documentTitle: systemMedia.title,
+      ogTitle: '',
+      twitterTitle: '',
+      jsonLdTitle: '',
+      jsonLdSeriesTitle: '',
+      canonicalTitle,
+      playbackState: systemMedia.playbackState,
+    };
   }
 
   getProject(now = Date.now()): ProjectContext | null {
@@ -346,7 +333,10 @@ export class ContextChannelStore {
   listSources(now = Date.now()): SourceState[] {
     const out: SourceState[] = [];
     for (const source of this.sources.values()) {
-      out.push({ ...source, connected: source.connected && now - source.lastSeen <= SOURCE_TTL_MS });
+      out.push({
+        ...source,
+        connected: source.connected && now - source.lastSeen <= SOURCE_TTL_MS,
+      });
     }
     return out.sort((a, b) => a.browserInstanceId.localeCompare(b.browserInstanceId));
   }
