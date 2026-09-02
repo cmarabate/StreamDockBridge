@@ -1,0 +1,14 @@
+{
+    "Actions": {},
+    "DeviceModel": "20GBA9901",
+    "DeviceSerialNumber": "01E2D2782F04",
+    "DeviceUUID": "VSDN4Pro",
+    "Name": "USEFUL v2",
+    "Pages": {
+        "Current": "F06684D5-1B0A-4D3B-8806-C74ED23C3C11.sdProfile",
+        "Pages": [
+            "F06684D5-1B0A-4D3B-8806-C74ED23C3C11.sdProfile"
+        ]
+    },
+    "Version": "1.0"
+}

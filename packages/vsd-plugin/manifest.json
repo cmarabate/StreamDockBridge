@@ -1,0 +1,113 @@
+{
+  "Actions": [
+    {
+      "Icon": "images/imdb_icon",
+      "Name": "IMDb Search",
+      "States": [
+        {
+          "Image": "images/imdb_key"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Trigger IMDb search for current tab (superseded by Context URL; kept so existing profiles keep working)",
+      "UUID": "com.cmarabate.streamdock.streamdockbridge.imdb",
+      "VisibleInActionsList": false
+    },
+    {
+      "Icon": "images/cast_icon",
+      "Name": "Cast Search",
+      "States": [
+        {
+          "Image": "images/cast_key"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Trigger Cast search for current tab (superseded by Context URL; kept so existing profiles keep working)",
+      "UUID": "com.cmarabate.streamdock.streamdockbridge.cast",
+      "VisibleInActionsList": false
+    },
+    {
+      "Icon": "images/justwatch_icon",
+      "Name": "JustWatch Search",
+      "States": [
+        {
+          "Image": "images/justwatch_key"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Trigger JustWatch search for current tab (superseded by Context URL; kept so existing profiles keep working)",
+      "UUID": "com.cmarabate.streamdock.streamdockbridge.justwatch",
+      "VisibleInActionsList": false
+    },
+    {
+      "Icon": "images/reddit_icon",
+      "Name": "Reddit Search",
+      "States": [
+        {
+          "Image": "images/reddit_key"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Trigger Reddit search for current tab (superseded by Context URL; kept so existing profiles keep working)",
+      "UUID": "com.cmarabate.streamdock.streamdockbridge.reddit",
+      "VisibleInActionsList": false
+    },
+    {
+      "Icon": "images/icon",
+      "Name": "Transcribe Current Video",
+      "States": [
+        {
+          "Image": "images/icon"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Send the current tab to TranscriptForge for transcription",
+      "UUID": "com.cmarabate.streamdock.streamdockbridge.transcribe"
+    },
+    {
+      "Icon": "images/icon",
+      "Name": "Context URL",
+      "PropertyInspectorPath": "propertyInspector/contextUrl.html",
+      "States": [
+        {
+          "Image": "images/icon"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Open a URL template filled in from the current browser page",
+      "UUID": "com.cmarabate.streamdock.streamdockbridge.contexturl"
+    },
+    {
+      "Icon": "images/icon",
+      "Name": "Local Project Action",
+      "PropertyInspectorPath": "propertyInspector/localProject.html",
+      "States": [
+        {
+          "Image": "images/icon"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Execute a closed action on the currently active project (Terminal, Files, VS Code, Copy Path)",
+      "UUID": "com.cmarabate.streamdock.streamdockbridge.localproject"
+    }
+  ],
+  "Author": "cmarabate",
+  "Category": "StreamDockBridge",
+  "CategoryIcon": "images/category_icon",
+  "CodePathWin": "dist/main.js",
+  "Description": "StreamDockBridge Silent Localhost Transport Plugin",
+  "Name": "StreamDockBridge",
+  "Icon": "images/icon",
+  "Version": "1.0.0",
+  "URL": "https://github.com/cmarabate/StreamDockBridge",
+  "DefaultLocale": "en",
+  "OS": [
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    }
+  ],
+  "Nodejs": {
+    "Version": "20"
+  }
+}

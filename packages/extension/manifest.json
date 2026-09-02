@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "StreamDockBridge Context Provider",
+  "version": "1.0.0",
+  "description": "Provides current active tab context to local StreamDockBridge service.",
+  "permissions": [
+    "tabs",
+    "storage",
+    "alarms",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "dist/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*",
+        "http://127.0.0.1/*"
+      ],
+      "js": [
+        "dist/content.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtneiKDyuedenxURLuYkHcc70fjOFIUegY/pIlPFaA6F1nFqk9CjNf/ukPj3xY+ND9AbTwu0vxQrqjZ1+hru/PL5oMy8tjpWJb/9ku58q8ovw5X88SNandQrlsQpNQ4pZfT4kkNXvAXcmE/LRRzaO9zd/hB8lMwPU00BWqiDS9MvhQMPWvBdTRxuG171whDH3MocOclWtkJVVvITzeGAnqNypuu9v0J12PwhGuqpyhoJ3CAt8VYwsWgP14ous488swQzzeVmulrK4e2OeZ8xWAYrxyE3WIpPw4sVIZvtEpeC+dWuxbuRQBddiEX+wvpsCruuD/pd8lkVD3Uh9BKLntQIDAQAB",
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  }
+}

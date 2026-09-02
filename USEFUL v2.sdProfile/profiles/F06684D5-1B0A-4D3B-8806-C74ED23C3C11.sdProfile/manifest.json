@@ -1,0 +1,143 @@
+{
+    "Actions": {
+        "0,1": {
+            "ActionID": "47541a7c-2d7d-4339-937e-d91908473a0a",
+            "Controller": "Keypad",
+            "Name": "AUDIO FIX",
+            "Settings": {
+                "deviceType": "output",
+                "mode": "selected",
+                "device1": "Speakers",
+                "device1Name": "Speakers (Realtek High Definition Audio)"
+            },
+            "State": 0,
+            "States": [
+                {
+                    "Image": "useful_audio_fix.png",
+                    "ShowTitle": false,
+                    "Title": "",
+                    "TitleAlignment": "bottom"
+                }
+            ],
+            "UUID": "com.lizard.switchaudio.toggle"
+        },
+        "1,1": {
+            "ActionID": "7eae3711-18bf-4745-a5a0-279a93cbb09d",
+            "Controller": "Keypad",
+            "Name": "RECORD",
+            "Settings": {},
+            "State": 1,
+            "States": [
+                {
+                    "Image": "useful_record_on.png",
+                    "Name": "Start"
+                },
+                {
+                    "Image": "useful_record_off.png",
+                    "Name": "Stop"
+                }
+            ],
+            "UUID": "com.hotspot.streamdock.obsstudio.record"
+        },
+        "2,1": {
+            "ActionID": "99f7511a-35c1-444a-9b02-7a243af7eb49",
+            "Controller": "Keypad",
+            "Name": "IMDb",
+            "Settings": {
+                "urlTemplate": "https://www.imdb.com/find?q={title}",
+                "autoWebsiteIcon": false,
+                "contextMode": "media"
+            },
+            "State": 0,
+            "States": [
+                {
+                    "Image": "useful_imdb.png",
+                    "ShowTitle": false,
+                    "Title": "",
+                    "TitleAlignment": "bottom"
+                }
+            ],
+            "UUID": "com.cmarabate.streamdock.streamdockbridge.contexturl"
+        },
+        "3,1": {
+            "ActionID": "71394053-f83d-47a6-9161-e4b09122774c",
+            "Controller": "Keypad",
+            "Name": "CAST",
+            "Settings": {
+                "urlTemplate": "https://www.google.com/search?q={title}%20cast",
+                "autoWebsiteIcon": false,
+                "contextMode": "media"
+            },
+            "State": 0,
+            "States": [
+                {
+                    "Image": "useful_cast.png",
+                    "ShowTitle": false,
+                    "Title": "",
+                    "TitleAlignment": "bottom"
+                }
+            ],
+            "UUID": "com.cmarabate.streamdock.streamdockbridge.contexturl"
+        },
+        "4,1": {
+            "ActionID": "4481faca-8655-4b9e-bcb7-77d1a3b4dcab",
+            "Controller": "Keypad",
+            "Name": "JUSTWATCH",
+            "Settings": {
+                "urlTemplate": "https://www.justwatch.com/us/search?q={title}",
+                "autoWebsiteIcon": false,
+                "contextMode": "media"
+            },
+            "State": 0,
+            "States": [
+                {
+                    "Image": "useful_justwatch.png",
+                    "ShowTitle": false,
+                    "Title": "",
+                    "TitleAlignment": "bottom"
+                }
+            ],
+            "UUID": "com.cmarabate.streamdock.streamdockbridge.contexturl"
+        },
+        "0,2": {
+            "ActionID": "438af019-6283-4406-a55c-1d27ee7210ff",
+            "Controller": "Keypad",
+            "Name": "REDDIT",
+            "Settings": {
+                "urlTemplate": "https://www.reddit.com/search/?q={title}",
+                "autoWebsiteIcon": false,
+                "contextMode": "media"
+            },
+            "State": 0,
+            "States": [
+                {
+                    "Image": "useful_reddit.png",
+                    "ShowTitle": false,
+                    "Title": "",
+                    "TitleAlignment": "bottom"
+                }
+            ],
+            "UUID": "com.cmarabate.streamdock.streamdockbridge.contexturl"
+        },
+        "1,2": {
+            "ActionID": "5c2f9d41-7a63-4b18-9e50-2b8d6f04a7c3",
+            "Controller": "Keypad",
+            "Name": "TRANSCRIBE",
+            "Settings": {},
+            "State": 0,
+            "States": [
+                {
+                    "Image": "useful_transcribe.png",
+                    "ShowTitle": false,
+                    "Title": "",
+                    "TitleAlignment": "bottom"
+                }
+            ],
+            "UUID": "com.cmarabate.streamdock.streamdockbridge.transcribe"
+        }
+    },
+    "DeviceModel": "20GBA9901",
+    "DeviceUUID": "VSDN4Pro",
+    "Name": "",
+    "Version": "1.0"
+}

@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Local Project Action</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #2d2d2d;
+        --fg: #d8d8d8;
+        --muted: #9a9a9a;
+        --field: #3d3d3d;
+        --border: #4f4f4f;
+        --accent: #0078ff;
+      }
+      body {
+        margin: 0;
+        padding: 12px;
+        background: var(--bg);
+        color: var(--fg);
+        font: 13px/1.45 "Segoe UI", system-ui, sans-serif;
+      }
+      label {
+        display: block;
+        font-weight: 600;
+        margin-bottom: 6px;
+      }
+      select {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 7px 8px;
+        margin-bottom: 12px;
+        background: var(--field);
+        color: var(--fg);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        font: inherit;
+      }
+      select:focus {
+        outline: none;
+        border-color: var(--accent);
+      }
+      .hint {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.4;
+        margin-top: 4px;
+        margin-bottom: 12px;
+      }
+      .card {
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 10px 12px;
+        margin-top: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <label for="actionSelect">Project Action</label>
+    <select id="actionSelect">
+      <option value="OPEN_PROJECT_TERMINAL">Open Windows Terminal (wt.exe -d)</option>
+      <option value="OPEN_PROJECT_FOLDER">Open Project Folder (Explorer)</option>
+      <option value="OPEN_PROJECT_IN_VSCODE">Open in VS Code (Code.exe)</option>
+      <option value="COPY_PROJECT_PATH">Copy Project Path to Clipboard</option>
+    </select>
+    <div class="hint">
+      Executes a closed action against the active project identified from your Chrome work page.
+    </div>
+
+    <div class="card">
+      <div style="font-weight: 600; margin-bottom: 4px;">Security & Routing</div>
+      <div class="hint" style="margin-bottom: 0;">
+        The target folder path is resolved strictly from your canonical AgentOS project registry.
+        If no project is active on your work browser, the key safely alerts and opens nothing.
+      </div>
+    </div>
+
+    <script>
+      let websocket = null;
+      let pluginUUID = null;
+      let actionInfo = {};
+
+      const select = document.getElementById('actionSelect');
+
+      function connectElgatoStreamDeckSocket(inPort, inUUID, inMessageType, inApplicationInfo, inActionInfo) {
+        pluginUUID = inUUID;
+        if (inActionInfo) {
+          try {
+            actionInfo = typeof inActionInfo === 'string' ? JSON.parse(inActionInfo) : inActionInfo;
+          } catch (e) {
+            actionInfo = {};
+          }
+        }
+
+        const settings = (actionInfo && actionInfo.payload && actionInfo.payload.settings) || {};
+        if (settings.action) {
+          select.value = settings.action;
+        }
+
+        websocket = new WebSocket('ws://127.0.0.1:' + inPort);
+
+        websocket.onopen = function () {
+          websocket.send(
+            JSON.stringify({
+              event: inMessageType,
+              uuid: inUUID,
+            })
+          );
+        };
+
+        websocket.onmessage = function (evt) {
+          try {
+            const data = JSON.parse(evt.data);
+            if (data.event === 'didReceiveSettings' && data.payload && data.payload.settings) {
+              if (data.payload.settings.action) {
+                select.value = data.payload.settings.action;
+              }
+            }
+          } catch (e) {}
+        };
+      }
+
+      select.addEventListener('change', function () {
+        if (!websocket || websocket.readyState !== WebSocket.OPEN) return;
+        const currentSettings = (actionInfo && actionInfo.payload && actionInfo.payload.settings) || {};
+        const newSettings = Object.assign({}, currentSettings, { action: select.value });
+        websocket.send(
+          JSON.stringify({
+            event: 'setSettings',
+            context: pluginUUID,
+            payload: newSettings,
+          })
+        );
+      });
+    </script>
+  </body>
+</html>

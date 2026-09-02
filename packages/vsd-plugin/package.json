@@ -2,8 +2,16 @@
   "name": "@streamdockbridge/vsd-plugin",
   "version": "1.0.0",
   "private": true,
-  "main": "dist/index.js",
+  "main": "dist/main.js",
   "scripts": {
-    "build": "tsc -b"
+    "build": "tsc -b && esbuild src/main.ts --bundle --platform=node --target=node18 --outfile=dist/main.js",
+    "typecheck": "tsc -b --noEmit"
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.28.2"
   }
 }
