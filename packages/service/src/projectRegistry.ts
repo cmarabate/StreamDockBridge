@@ -19,6 +19,12 @@ export interface AgentOsProjectEntry {
 export interface AgentOsProjectRegistryState {
   schemaVersion: string;
   entries: AgentOsProjectEntry[];
+  provenance: {
+    sourceApp: string;
+    exportedAt: string;
+    packetId: string;
+    reconciliationId: string;
+  };
 }
 
 export interface ProjectMetadata {
@@ -44,8 +50,18 @@ function normalized(value: string): string {
   return value.trim().toLowerCase();
 }
 
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function stringArrayOrEmpty(value: unknown): string[] | null {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) return null;
+  return [...value];
 }
 
 /**
@@ -122,51 +138,85 @@ export class ProjectRegistryService {
     }
   }
 
+  /**
+   * Mirrors the load-bearing AgentOS identity-state boundary closely enough to
+   * fail closed on a state AgentOS itself would reject, while tolerating optional
+   * projection fields that older imports may omit.
+   */
   private validateState(value: unknown): AgentOsProjectRegistryState | null {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-    const raw = value as Record<string, unknown>;
-    if (raw.schemaVersion !== AGENTOS_PROJECT_REGISTRY_SCHEMA_VERSION) return null;
-    if (!Array.isArray(raw.entries)) return null;
+    if (!isRecord(value)) return null;
+    if (value.schemaVersion !== AGENTOS_PROJECT_REGISTRY_SCHEMA_VERSION) return null;
+    if (!Array.isArray(value.entries)) return null;
+    if (!isRecord(value.provenance)) return null;
+    if (!isNonEmptyString(value.provenance.sourceApp)) return null;
+    if (!isNonEmptyString(value.provenance.exportedAt)) return null;
+    if (!isNonEmptyString(value.provenance.packetId)) return null;
+    if (!isNonEmptyString(value.provenance.reconciliationId)) return null;
 
     const entries: AgentOsProjectEntry[] = [];
     const registryKeys = new Set<string>();
-    for (const candidate of raw.entries) {
-      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null;
-      const entry = candidate as Record<string, unknown>;
-      if (typeof entry.registryKey !== 'string' || !entry.registryKey.trim()) return null;
-      if (typeof entry.name !== 'string' || !entry.name.trim()) return null;
-      if (!isStringArray(entry.aliases)) return null;
-      if (entry.relatedDomains !== undefined && !isStringArray(entry.relatedDomains)) return null;
-      if (entry.localRepoPath !== null && typeof entry.localRepoPath !== 'string') return null;
-      if (entry.githubRepo !== null && typeof entry.githubRepo !== 'string') return null;
+    for (const candidate of value.entries) {
+      if (!isRecord(candidate)) return null;
+      if (
+        !isNonEmptyString(candidate.registryKey) ||
+        !/^[a-z][a-z0-9-]{1,40}$/.test(candidate.registryKey)
+      ) {
+        return null;
+      }
+      if (
+        !isNonEmptyString(candidate.name) ||
+        candidate.name.length > 160
+      ) {
+        return null;
+      }
+      if (
+        'githubRepo' in candidate &&
+        candidate.githubRepo !== null &&
+        (!isNonEmptyString(candidate.githubRepo))
+      ) {
+        return null;
+      }
 
-      const key = normalized(entry.registryKey);
+      const aliases = stringArrayOrEmpty(candidate.aliases);
+      const relatedDomains = stringArrayOrEmpty(candidate.relatedDomains);
+      if (aliases === null || relatedDomains === null) return null;
+
+      const key = normalized(candidate.registryKey);
       if (registryKeys.has(key)) return null;
       registryKeys.add(key);
 
       entries.push({
-        registryKey: entry.registryKey.trim(),
-        name: entry.name.trim(),
-        aliases: [...entry.aliases],
-        color: typeof entry.color === 'string' ? entry.color : null,
+        registryKey: candidate.registryKey.trim(),
+        name: candidate.name.trim(),
+        aliases,
+        color: typeof candidate.color === 'string' ? candidate.color : null,
         localRepoPath:
-          typeof entry.localRepoPath === 'string' && entry.localRepoPath.trim()
-            ? entry.localRepoPath.trim()
+          typeof candidate.localRepoPath === 'string' && candidate.localRepoPath.trim()
+            ? candidate.localRepoPath.trim()
             : null,
         githubRepo:
-          typeof entry.githubRepo === 'string' && entry.githubRepo.trim()
-            ? entry.githubRepo.trim()
+          typeof candidate.githubRepo === 'string' && candidate.githubRepo.trim()
+            ? candidate.githubRepo.trim()
             : null,
-        repoLess: entry.repoLess === true,
-        description: typeof entry.description === 'string' ? entry.description : null,
-        relatedDomains: entry.relatedDomains ? [...entry.relatedDomains] : [],
-        id: typeof entry.id === 'string' ? entry.id : null,
-        updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : undefined,
-        createdAt: typeof entry.createdAt === 'string' ? entry.createdAt : null,
+        repoLess: candidate.repoLess === true,
+        description: typeof candidate.description === 'string' ? candidate.description : null,
+        relatedDomains,
+        id: typeof candidate.id === 'string' ? candidate.id : null,
+        updatedAt: typeof candidate.updatedAt === 'string' ? candidate.updatedAt : undefined,
+        createdAt: typeof candidate.createdAt === 'string' ? candidate.createdAt : null,
       });
     }
 
-    return { schemaVersion: AGENTOS_PROJECT_REGISTRY_SCHEMA_VERSION, entries };
+    return {
+      schemaVersion: AGENTOS_PROJECT_REGISTRY_SCHEMA_VERSION,
+      entries,
+      provenance: {
+        sourceApp: value.provenance.sourceApp,
+        exportedAt: value.provenance.exportedAt,
+        packetId: value.provenance.packetId,
+        reconciliationId: value.provenance.reconciliationId,
+      },
+    };
   }
 
   public isHealthy(now = Date.now()): boolean {
