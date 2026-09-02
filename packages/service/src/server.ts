@@ -23,6 +23,7 @@ import {
   ChannelPayload,
 } from './contextChannels';
 import { ProjectRegistryService } from './projectRegistry';
+import { buildContextSnapshotV1 } from './contextBridge';
 import {
   executeLocalProjectAction,
   LocalProjectAction,
@@ -503,6 +504,34 @@ export function createBridgeServer(options: BridgeServerOptions = {}): BridgeSer
           project: describe('project'),
         },
       });
+      return;
+    }
+
+    /**
+     * The ContextBridge evidence boundary: one versioned, read-only snapshot.
+     *
+     * Deliberately NOT `/contexts`. That route is the existing debug view of
+     * the channel store, including the PROJECT channel — which carries an
+     * AgentOS-derived registry key and is therefore identity, not evidence.
+     * This route is a stable contract that publishes only what a browser
+     * observed and what a page's own URL proves, so a consumer can never mistake
+     * ContextBridge for a project resolver. Versioned in the path so the
+     * contract can change without breaking a reader that pinned v1.
+     *
+     * Authenticated even though it only reads: the snapshot names every browser
+     * the owner has open and what each is looking at.
+     */
+    if (req.method === 'GET' && pathname === '/contextbridge/v1/snapshot') {
+      if (!isAllowedOrigin(origin, allowAnyExtension)) {
+        sendJson(403, { success: false, error: 'origin_forbidden' });
+        return;
+      }
+      const clientSecret = req.headers['x-bridge-secret'];
+      if (!secretStore.verifySecret(clientSecret as string | undefined)) {
+        sendJson(401, { success: false, error: 'unauthorized' });
+        return;
+      }
+      sendJson(200, { success: true, snapshot: buildContextSnapshotV1(contextChannels) });
       return;
     }
 
