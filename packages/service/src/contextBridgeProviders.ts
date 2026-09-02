@@ -18,10 +18,17 @@ const CHATGPT_HOSTS = new Set(['chatgpt.com', 'chat.openai.com']);
 /**
  * The only path shape that proves ChatGPT project scope.
  *
- * `/g/g-p-<hex>[-<slug>]/...`. The sibling shape `/g/g-<id>-<slug>` is a custom
+ * `/g/g-p-<id>[-<slug>]/...`. The sibling shape `/g/g-<id>-<slug>` is a custom
  * GPT, not a project, and must not match — hence `g-p-` rather than `g-`.
+ *
+ * The id is OPAQUE. Only the `g-p-` prefix proves scope; the core after it is
+ * an alphanumeric provider token this boundary reads but never interprets. It
+ * was previously constrained to hexadecimal, which is a fact about the ids
+ * OpenAI happens to mint today, not about the shape that proves a project — a
+ * provider id with a non-hex character is still a project, and refusing it
+ * would have been ContextBridge deciding a provider's identifiers for it.
  */
-const CHATGPT_PROJECT_SEGMENT = /^g-p-([0-9a-f]{4,})(?:-(.*))?$/i;
+const CHATGPT_PROJECT_SEGMENT = /^g-p-([A-Za-z0-9]+)(?:-(.*))?$/i;
 
 /** A ChatGPT conversation id is a UUID. Anything else is not safely established. */
 const CHATGPT_CONVERSATION_ID =

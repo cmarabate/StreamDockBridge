@@ -78,6 +78,92 @@ describe('ChatGPT project evidence', () => {
   });
 });
 
+/**
+ * The project id is OPAQUE.
+ *
+ * This reader once required the core after `g-p-` to be hexadecimal. That was a
+ * fact about the ids OpenAI happens to mint today, not about the shape that
+ * proves a project — and encoding it meant ContextBridge would have refused a
+ * perfectly real project because it disagreed with the provider about what the
+ * provider's own identifiers may contain. Only the `g-p-` prefix is proof; the
+ * core is read and preserved, never interpreted.
+ */
+describe('opaque project ids', () => {
+  it('recognizes a project id that is not hexadecimal', () => {
+    const segment = 'g-p-68zx9QW3kv7ty2rs-roadmap';
+    const evidence = readProviderContext(`https://chatgpt.com/g/${segment}/project`);
+
+    expect(evidence).toEqual({
+      provider: 'chatgpt',
+      scope: 'project',
+      externalProjectId: segment,
+      projectDisplayLabel: 'roadmap',
+      conversationId: null,
+      evidence: {
+        proof: 'chatgpt-project-url-path',
+        matchedPathSegment: segment,
+        labelSource: 'chatgpt-project-url-slug',
+        conversationSource: null,
+      },
+    });
+  });
+
+  it('preserves a non-hex segment exactly, with and without a slug', () => {
+    const withSlug = 'g-p-ZZ99xyQQ-StreamDockBridge_v2';
+    const bare = 'g-p-ZZ99xyQQ';
+
+    expect(readProviderContext(`https://chatgpt.com/g/${withSlug}/project`)).toMatchObject({
+      externalProjectId: withSlug,
+      projectDisplayLabel: 'StreamDockBridge_v2',
+    });
+    expect(readProviderContext(`https://chatgpt.com/g/${bare}`)).toMatchObject({
+      externalProjectId: bare,
+      projectDisplayLabel: null,
+    });
+  });
+
+  it('still refuses a custom GPT whose id is likewise non-hexadecimal', () => {
+    const evidence = readProviderContext('https://chatgpt.com/g/g-68zx9QW3kv7ty2rs-code-helper');
+    expect(evidence).toMatchObject({ scope: 'none' });
+    expect(JSON.stringify(evidence)).not.toContain('externalProjectId');
+  });
+
+  /**
+   * Widening the character class must not widen the SHAPE. `g-p-` followed by
+   * at least one alphanumeric character is the whole rule; everything else on
+   * `/g/` stays unscoped.
+   */
+  it('does not turn arbitrary /g/ paths into projects', () => {
+    for (const segment of ['g-p', 'g-p-', 'g-p_underscore', 'gizmos', 'g-project-demo', 'p-abcd1234']) {
+      expect(readProviderContext(`https://chatgpt.com/g/${segment}/project`)).toMatchObject({
+        provider: 'chatgpt',
+        scope: 'none',
+      });
+    }
+  });
+
+  it('leaves ordinary conversation and title-shaped false positives unchanged', () => {
+    const uuid = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
+
+    // A conversation whose title reads exactly like a project name. The reader
+    // never sees the title; the URL says conversation, so it is a conversation.
+    expect(readProviderContext(`https://chatgpt.com/c/${uuid}`)).toEqual({
+      provider: 'chatgpt',
+      scope: 'conversation',
+      conversationId: uuid,
+      evidence: { proof: 'chatgpt-conversation-url-path', matchedPathSegment: uuid },
+    });
+
+    // A non-hex project segment somewhere that is not the proving path position.
+    expect(
+      readProviderContext(`https://chatgpt.com/c/${uuid}?ref=g-p-ZZ99xyQQ-roadmap`)
+    ).toMatchObject({ scope: 'conversation' });
+    expect(readProviderContext('https://chatgpt.com/#/g/g-p-ZZ99xyQQ-roadmap')).toMatchObject({
+      scope: 'none',
+    });
+  });
+});
+
 describe('ChatGPT non-project pages', () => {
   it('treats an ordinary conversation as a conversation, never a project', () => {
     const uuid = '9b2c1d0e-3a4b-4c5d-8e6f-70819a2b3c4d';
