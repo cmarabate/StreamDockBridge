@@ -937,30 +937,52 @@ StreamDockBridge reads the registry read-only and maps extracted page evidence v
 
 **Status: `VERIFIED AUTOMATED` + `VERIFIED RUNTIME`.**
 
-### Cross-Browser Voice Input → Media Auto-Pause & Pause Lease State Machine — `DONE` / `VERIFIED AUTOMATED` + `VERIFIED AGENT REAL-BROWSER RUNTIME` / `WAITING OWNER PHYSICAL RETEST`
+### Cross-Browser Voice Input → Media Auto-Pause & Pause Lease State Machine — `REMOVED FROM STREAMDOCKBRIDGE` (authority transferred to VoiceMediaBridge)
 
-**The goal:** When the owner begins ChatGPT voice dictation in Chrome (`WORK_BROWSER`), if the active Brave `MEDIA_BROWSER` is currently playing, StreamDockBridge automatically pauses Brave playback. When that same voice session ends, StreamDockBridge resumes the media session — unless the user has overridden playback or switched context.
+**This capability no longer exists in StreamDockBridge.** Its implementation was deleted on
+2026-09-01 on branch `cleanup/voice-media-authority-cutover`. Voice lifecycle, media
+identity/state, pause ownership, media transport control, causal resume, and user-override
+semantics are owned solely by **VoiceMediaBridge**. See `docs/VOICE_MEDIA_AUTHORITY_CUTOVER.md`.
 
-**Physical truth and repair chronology (2026-08-30 through 2026-08-31):**
-- The only owner-reported physical pass is **real ChatGPT Dictate START pauses playing Brave media**.
-- The owner then reported the decisive physical failure: media manually paused before Dictate was incorrectly started when Dictate ended. Earlier roadmap claims that STOP → RESUME, `Ctrl+Shift+D`, pre-paused media, user override, and media-owner switching were owner-verified physical passes were inaccurate and are withdrawn.
-- The first broken boundary was causal ownership. The service granted resume authority before Brave acknowledged that StreamDockBridge had actually changed the exact media element from playing to paused. A pre-paused, missing, failed, stale, or wrong-document target could therefore receive a later RESUME.
-- The repair now requires an authenticated, target-correlated command acknowledgement. Resume authority is granted only for `CHANGED` with the exact playing → paused transition, browser connection generation, tab, URL/document generation, and media target. `ALREADY_IN_STATE`, `NOT_FOUND`, `FAILED`, expired, and stale-target outcomes never grant ownership.
-- The pause lease now spans all overlapping voice producers, revokes queued or delivered resume work when a new START arrives, validates a command immediately before browser mutation, deduplicates command execution, serializes long-poll delivery, and relinquishes ownership on same-document media changes or user playback.
+**What was removed:** `packages/service/src/voiceCoordinator.ts` and its tests; the service
+endpoints `POST /voice/lifecycle`, `GET /voice/status`, `GET /media/commands`,
+`POST /media/commands/validate`, `POST /media/commands/ack` and `POST /media/override`; and the
+extension background worker's persisted voice-session state, lifecycle forwarding queue,
+media-override forwarding, long-poll command poller, command validation/acknowledgement, and
+`EXECUTE_MEDIA_COMMAND` dispatch.
 
-**Agent real-browser candidate verification (2026-08-31):**
-- Real Chrome ChatGPT Dictate with real Brave Disney+ *Regular Show*, playing at START: Brave paused; `/voice/status` reported `initialPlayback=playing`, `didPause=true`, `resumeAuthorized=true`; ending Dictate resumed playback. **PASS — VERIFIED AGENT REAL-BROWSER RUNTIME.**
-- The exact owner-failing case was reproduced against the previous runtime, where pre-paused media resumed after Dictate ended.
-- Against the repaired candidate, the same Disney+ element was directly confirmed paused before START; `/voice/status` reported `initialPlayback=paused`, `didPause=false`, `resumeAuthorized=false`; direct page inspection confirmed it remained paused after Dictate ended. **PASS — VERIFIED AGENT REAL-BROWSER RUNTIME.**
-- Duplicate lifecycle delivery, overlapping producers, END-before-ACK/new-START composition, queued RESUME revocation, simultaneous long-poll waiters, stale/expired targets, same-document media changes, and user-override ownership loss are **VERIFIED AUTOMATED**.
-- Owner physical acceptance remains pending for STOP → RESUME, `Ctrl+Shift+D`, the repaired pre-paused case, user override, and media-owner switching. Do not promote these cases to `VERIFIED PHYSICAL` until the owner personally retests and reports them.
+The path had already been severed on the browser side by the earlier content-script cutover:
+nothing in the repository still produced `VOICE_LIFECYCLE` and nothing implemented
+`EXECUTE_MEDIA_COMMAND`, so the poller generated continuous loopback traffic for a command chain
+that could never execute.
 
-**Fail-closed recovery note:** command or acknowledgement loss never authorizes a speculative resume. If the service or extension is restarted after StreamDockBridge paused media but before the lease is reconciled, automatic recovery may leave media paused; manual Play is the safe recovery action.
+**Historical record (2026-08-30 through 2026-08-31), retained as history only. These statements
+describe software that is no longer present, and are not current status claims:**
+- The only owner-reported physical pass was **real ChatGPT Dictate START pauses playing Brave media**.
+- The owner then reported the decisive physical failure: media manually paused before Dictate was incorrectly resumed when Dictate ended. Earlier roadmap claims that STOP → RESUME, `Ctrl+Shift+D`, pre-paused media, user override, and media-owner switching were owner-verified physical passes were inaccurate and were withdrawn.
+- The first broken boundary was causal ownership: the service granted resume authority before Brave acknowledged that StreamDockBridge had actually changed the exact media element from playing to paused.
+- The final StreamDockBridge repair required an authenticated, target-correlated command acknowledgement, and a pause lease spanning all overlapping voice producers.
+- Agent real-browser runtime passes were recorded against that implementation on 2026-08-31. Owner physical acceptance for STOP → RESUME, `Ctrl+Shift+D`, the repaired pre-paused case, user override, and media-owner switching was never obtained, and is now permanently moot for StreamDockBridge.
 
-**Startup & Daemon Persistence:**
+**Status: `REMOVED`. StreamDockBridge makes no automated, runtime, or physical claim for
+voice-driven media pause/resume. Equivalent behavior is VoiceMediaBridge's to own and prove.**
+
+### Authority boundaries after the cutover — `DONE` (decision recorded)
+
+- **VoiceMediaBridge** owns voice-input lifecycle, GSMTC media identity and state, media pause
+  ownership, media transport control, causal resume, and user-override semantics. StreamDockBridge
+  consumes that media truth read-only and fails closed when it is unavailable.
+- **StreamDockBridge** retains generic browser/project/page context and its hardware features:
+  Stream Deck / VSD integration, N4 Pro routing, context channels, project registry, local
+  actions, lookup/transcription actions, icons, and button feedback.
+- **ContextBridge** is the logical browser/current-context authority boundary. It is **still
+  hosted inside the existing StreamDockBridge service and extension** for now.
+- Extracting ContextBridge into a standalone process or repository is **not** part of this
+  cleanup slice, and no code here should assume that extraction has happened.
+
+### Service startup & daemon persistence — `VERIFIED RUNTIME`
+
 - Windows user startup entry (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\StreamDockBridgeService.cmd`) executes `"C:\nvm4w\nodejs\node.exe" "D:\_Dev\Apps\StreamDockBridge\packages\service\dist\index.js"` on login, ensuring persistent service availability.
-
-**Status: START → PAUSE `VERIFIED OWNER PHYSICAL`; repaired conditional resume `VERIFIED AUTOMATED` + `VERIFIED AGENT REAL-BROWSER RUNTIME`; remaining owner acceptance `WAITING OWNER PHYSICAL RETEST`.**
 
 ### WatchDirector Cross-Repo Integration Mission (Specification) — `PLANNED` (Architectural Boundary Preserved)
 
