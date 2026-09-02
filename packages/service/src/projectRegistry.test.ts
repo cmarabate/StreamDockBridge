@@ -23,7 +23,20 @@ describe('ProjectRegistryService', () => {
     const write = (entries: any[], schemaVersion = AGENTOS_PROJECT_REGISTRY_SCHEMA_VERSION) => {
       fs.writeFileSync(
         tempRegistryPath,
-        JSON.stringify({ schemaVersion, entries }, null, 2),
+        JSON.stringify(
+          {
+            schemaVersion,
+            entries,
+            provenance: {
+              sourceApp: 'IdeaForge',
+              exportedAt: '2026-09-02T00:00:00.000Z',
+              packetId: 'packet-test',
+              reconciliationId: 'reconciliation-test',
+            },
+          },
+          null,
+          2
+        ),
         'utf8'
       );
       const now = new Date(Date.now() + 20);
