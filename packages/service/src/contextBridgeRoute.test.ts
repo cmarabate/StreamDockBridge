@@ -83,7 +83,15 @@ function request(
   });
 }
 
-async function publishPage(url: string, title: string, sequence = 1) {
+const WORK_SOURCE = {
+  browserInstanceId: 'chrome-work',
+  browserFamily: 'chrome',
+  displayName: 'Chrome (work)',
+  mode: 'WORK_BROWSER',
+  connectionGeneration: 1,
+};
+
+async function publishPage(url: string, title: string, sequence = 1, source = WORK_SOURCE) {
   return request(
     'POST',
     '/context',
@@ -91,13 +99,7 @@ async function publishPage(url: string, title: string, sequence = 1) {
     {
       channel: 'page',
       observationSequence: sequence,
-      source: {
-        browserInstanceId: 'chrome-work',
-        browserFamily: 'chrome',
-        displayName: 'Chrome (work)',
-        mode: 'WORK_BROWSER',
-        connectionGeneration: 1,
-      },
+      source,
       payload: {
         url,
         documentTitle: title,
@@ -141,6 +143,7 @@ describe('GET /contextbridge/v1/snapshot', () => {
     expect(res.json.success).toBe(true);
     expect(res.json.snapshot.schemaVersion).toBe('contextbridge.snapshot.v1');
     expect(typeof res.json.snapshot.readAt).toBe('number');
+    expect(res.json.snapshot.sources).toEqual([]);
     expect(res.json.snapshot.channels).toEqual({ media: null, page: null });
   });
 
@@ -245,5 +248,93 @@ describe('GET /contextbridge/v1/snapshot', () => {
   it('rejects a write to the read-only boundary', async () => {
     const post = await request('POST', ROUTE, { 'X-Bridge-Secret': secret }, { snapshot: {} });
     expect(post.status).toBe(404);
+  });
+});
+
+describe('GET /contextbridge/v1/snapshot — connected source inventory', () => {
+  const heartbeat = (source: typeof WORK_SOURCE) =>
+    request('POST', '/sources/heartbeat', { 'X-Bridge-Secret': secret }, { source });
+
+  it('returns the inventory only through the authenticated route', async () => {
+    await publishPage('https://example.com/docs', 'Docs');
+
+    const anonymous = await request('GET', ROUTE);
+    expect(anonymous.status).toBe(401);
+    expect(JSON.stringify(anonymous.json)).not.toContain('chrome-work');
+
+    const authed = await request('GET', ROUTE, { 'X-Bridge-Secret': secret });
+    expect(authed.status).toBe(200);
+    expect(authed.json.snapshot.schemaVersion).toBe('contextbridge.snapshot.v1');
+    expect(authed.json.snapshot.sources).toEqual([
+      {
+        sourceInstanceId: 'chrome-work',
+        browserFamily: 'chrome',
+        displayName: 'Chrome (work)',
+        role: 'WORK_BROWSER',
+        connectionGeneration: 1,
+      },
+    ]);
+  });
+
+  it('lists two same-family profiles while PAGE names only its owner', async () => {
+    const profileB = {
+      ...WORK_SOURCE,
+      browserInstanceId: 'chrome-work-b',
+      displayName: 'Chrome (work, profile B)',
+      mode: 'HYBRID',
+    };
+    await publishPage('https://chatgpt.com/g/g-p-abcd1234-first/project', 'First');
+    const hb = await heartbeat(profileB);
+    expect(hb.status).toBe(200);
+
+    const res = await request('GET', ROUTE, { 'X-Bridge-Secret': secret });
+    const snapshot = res.json.snapshot;
+    expect(snapshot.sources.map((s: any) => [s.sourceInstanceId, s.browserFamily, s.role])).toEqual([
+      ['chrome-work', 'chrome', 'WORK_BROWSER'],
+      ['chrome-work-b', 'chrome', 'HYBRID'],
+    ]);
+    expect(snapshot.channels.page.source.sourceInstanceId).toBe('chrome-work');
+    expect(snapshot.channels.page.providerContext.externalProjectId).toBe('g-p-abcd1234-first');
+    expect(snapshot.sources).toContainEqual(snapshot.channels.page.source);
+  });
+
+  it('drops a disconnected source from the inventory', async () => {
+    await publishPage('https://example.com/docs', 'Docs');
+    await heartbeat({ ...WORK_SOURCE, browserInstanceId: 'chrome-other', mode: 'DISABLED' });
+
+    const before = await request('GET', ROUTE, { 'X-Bridge-Secret': secret });
+    expect(before.json.snapshot.sources.map((s: any) => s.sourceInstanceId)).toEqual([
+      'chrome-other',
+      'chrome-work',
+    ]);
+
+    await request(
+      'POST',
+      '/sources/disconnect',
+      { 'X-Bridge-Secret': secret },
+      { browserInstanceId: 'chrome-work' }
+    );
+
+    const after = await request('GET', ROUTE, { 'X-Bridge-Secret': secret });
+    expect(after.json.snapshot.sources.map((s: any) => s.sourceInstanceId)).toEqual([
+      'chrome-other',
+    ]);
+    expect(after.json.snapshot.channels.page).toBeNull();
+  });
+
+  it('carries no liveness clock, secret, registry key or foreground claim in the inventory', async () => {
+    await publishPage('https://chatgpt.com/g/g-p-abcd1234-first/project', 'First');
+    const res = await request('GET', ROUTE, { 'X-Bridge-Secret': secret });
+    const encoded = JSON.stringify(res.json.snapshot.sources);
+    expect(encoded).not.toContain(secret);
+    for (const forbidden of ['lastSeen', 'connected', 'registryKey', 'projectKey', 'hwnd', 'foreground']) {
+      expect(encoded.toLowerCase()).not.toContain(forbidden.toLowerCase());
+    }
+    expect(Object.keys(res.json.snapshot).sort()).toEqual([
+      'channels',
+      'readAt',
+      'schemaVersion',
+      'sources',
+    ]);
   });
 });

@@ -467,3 +467,212 @@ describe('identity and action authority', () => {
     expect(seen).not.toContain('launcher');
   });
 });
+
+describe('connected source inventory (CB-0A.1)', () => {
+  it('lists one connected source exactly once', () => {
+    const store = new ContextChannelStore();
+    const chrome = source('chrome-work', 'WORK_BROWSER');
+    publish(store, chrome, 'page', page('https://example.com/docs'), {
+      sequence: 1,
+      observedAt: 1_000,
+    });
+    // A heartbeat and a second publish are the same installation, not new entries.
+    store.registerSource(chrome, 1_100);
+    publish(store, chrome, 'page', page('https://example.com/more'), {
+      sequence: 2,
+      observedAt: 1_200,
+    });
+
+    const snapshot = buildContextSnapshotV1(store, 1_200);
+    expect(snapshot.sources).toEqual([
+      {
+        sourceInstanceId: 'chrome-work',
+        browserFamily: 'chrome',
+        displayName: 'chrome-work',
+        role: 'WORK_BROWSER',
+        connectionGeneration: 1,
+      },
+    ]);
+  });
+
+  it('lists an idle connected source that has published nothing', () => {
+    const store = new ContextChannelStore();
+    store.registerSource(source('chrome-work', 'WORK_BROWSER'), 1_000);
+
+    const snapshot = buildContextSnapshotV1(store, 1_000);
+    expect(snapshot.sources.map((s) => s.sourceInstanceId)).toEqual(['chrome-work']);
+    expect(snapshot.channels).toEqual({ media: null, page: null });
+  });
+
+  it('lists both same-family WORK/HYBRID installations while only one owns PAGE', () => {
+    const store = new ContextChannelStore();
+    const profileA = source('chrome-profile-a', 'WORK_BROWSER');
+    const profileB = source('chrome-profile-b', 'HYBRID');
+    expect(profileA.browserFamily).toBe(profileB.browserFamily);
+
+    publish(store, profileA, 'page', page('https://example.com/docs'), {
+      sequence: 1,
+      observedAt: 1_000,
+    });
+    // The second profile connects (MV3 startup/recovery) without winning PAGE.
+    store.registerSource(profileB, 1_050);
+
+    const snapshot = buildContextSnapshotV1(store, 1_100);
+    expect(snapshot.sources).toEqual([
+      expect.objectContaining({
+        sourceInstanceId: 'chrome-profile-a',
+        browserFamily: 'chrome',
+        role: 'WORK_BROWSER',
+      }),
+      expect.objectContaining({
+        sourceInstanceId: 'chrome-profile-b',
+        browserFamily: 'chrome',
+        role: 'HYBRID',
+      }),
+    ]);
+    // Channel evidence is unchanged: PAGE still names exactly its owner.
+    expect(snapshot.channels.page!.source.sourceInstanceId).toBe('chrome-profile-a');
+    expect(JSON.stringify(snapshot.channels)).not.toContain('chrome-profile-b');
+  });
+
+  it('includes every role, DISABLED included, and leaves relevance to the consumer', () => {
+    const store = new ContextChannelStore();
+    store.registerSource(source('brave-media', 'MEDIA_BROWSER'), 1_000);
+    store.registerSource(source('chrome-off', 'DISABLED'), 1_000);
+    store.registerSource(source('chrome-work', 'WORK_BROWSER'), 1_000);
+    store.registerSource(source('chrome-hybrid', 'HYBRID'), 1_000);
+
+    const roles = buildContextSnapshotV1(store, 1_000).sources.map((s) => [
+      s.sourceInstanceId,
+      s.role,
+    ]);
+    expect(roles).toEqual([
+      ['brave-media', 'MEDIA_BROWSER'],
+      ['chrome-hybrid', 'HYBRID'],
+      ['chrome-off', 'DISABLED'],
+      ['chrome-work', 'WORK_BROWSER'],
+    ]);
+  });
+
+  it('omits disconnected and expired sources', () => {
+    const store = new ContextChannelStore();
+    store.registerSource(source('chrome-gone', 'WORK_BROWSER'), 1_000);
+    store.registerSource(source('chrome-old', 'WORK_BROWSER'), 1_000);
+    store.registerSource(source('chrome-live', 'WORK_BROWSER'), 1_000);
+    store.disconnect('chrome-gone');
+
+    const at = 1_000 + SOURCE_TTL_MS + 1;
+    store.registerSource(source('chrome-live', 'WORK_BROWSER'), at);
+
+    const ids = buildContextSnapshotV1(store, at).sources.map((s) => s.sourceInstanceId);
+    expect(ids).toEqual(['chrome-live']);
+  });
+
+  it('treats the TTL edge for inventory exactly as it does for channels', () => {
+    const store = new ContextChannelStore();
+    const chrome = source('chrome-work', 'WORK_BROWSER');
+    publish(store, chrome, 'page', page('https://example.com/docs'), {
+      sequence: 1,
+      observedAt: 1_000,
+    });
+
+    const atEdge = buildContextSnapshotV1(store, 1_000 + SOURCE_TTL_MS);
+    expect(atEdge.sources).toHaveLength(1);
+    expect(atEdge.channels.page).not.toBeNull();
+
+    const pastEdge = buildContextSnapshotV1(store, 1_000 + SOURCE_TTL_MS + 1);
+    expect(pastEdge.sources).toEqual([]);
+    expect(pastEdge.channels.page).toBeNull();
+  });
+
+  it('shows a restarted installation once, at its newest connection generation', () => {
+    const store = new ContextChannelStore();
+    store.registerSource(source('chrome-work', 'WORK_BROWSER', 1), 1_000);
+    store.registerSource(source('chrome-work', 'WORK_BROWSER', 2), 1_100);
+
+    const snapshot = buildContextSnapshotV1(store, 1_100);
+    expect(snapshot.sources).toEqual([
+      expect.objectContaining({ sourceInstanceId: 'chrome-work', connectionGeneration: 2 }),
+    ]);
+  });
+
+  it('orders the inventory deterministically by sourceInstanceId regardless of arrival', () => {
+    const forward = new ContextChannelStore();
+    const reverse = new ContextChannelStore();
+    const ids = ['chrome-c', 'brave-a', 'chrome-b', 'edge-d'];
+    ids.forEach((id) => forward.registerSource(source(id, 'HYBRID'), 1_000));
+    [...ids].reverse().forEach((id) => reverse.registerSource(source(id, 'HYBRID'), 1_000));
+
+    const order = (store: ContextChannelStore) =>
+      buildContextSnapshotV1(store, 1_000).sources.map((s) => s.sourceInstanceId);
+    expect(order(forward)).toEqual(['brave-a', 'chrome-b', 'chrome-c', 'edge-d']);
+    expect(order(reverse)).toEqual(order(forward));
+  });
+
+  it('always lists the owner of every present channel', () => {
+    const store = new ContextChannelStore();
+    const brave = source('brave-media', 'MEDIA_BROWSER');
+    const chrome = source('chrome-work', 'WORK_BROWSER');
+    publish(store, brave, 'media', page('https://example.com/watch'), {
+      sequence: 1,
+      observedAt: 1_000,
+    });
+    publish(store, chrome, 'page', page('https://example.com/docs'), {
+      sequence: 1,
+      observedAt: 1_000,
+    });
+
+    const snapshot = buildContextSnapshotV1(store, 1_000);
+    const listed = new Set(snapshot.sources.map((s) => s.sourceInstanceId));
+    for (const channel of Object.values(snapshot.channels)) {
+      expect(channel).not.toBeNull();
+      expect(listed.has(channel!.source.sourceInstanceId)).toBe(true);
+      // Identical evidence in both places: the channel's source IS the inventory entry.
+      expect(snapshot.sources).toContainEqual(channel!.source);
+    }
+  });
+
+  it('exposes only the ContextSourceV1 fields and no liveness clock, secret or identity', () => {
+    const store = new ContextChannelStore();
+    store.registerSource(source('chrome-work', 'WORK_BROWSER'), 1_000);
+    store.registerSource(source('chrome-off', 'DISABLED'), 1_000);
+
+    const snapshot = buildContextSnapshotV1(store, 1_000);
+    for (const entry of snapshot.sources) {
+      expect(Object.keys(entry).sort()).toEqual([
+        'browserFamily',
+        'connectionGeneration',
+        'displayName',
+        'role',
+        'sourceInstanceId',
+      ]);
+    }
+
+    const encoded = JSON.stringify(snapshot.sources);
+    for (const forbidden of [
+      'lastSeen',
+      'connected',
+      'secret',
+      'cookie',
+      'registryKey',
+      'projectKey',
+      'projectName',
+      'localRepoPath',
+      'hwnd',
+      'foreground',
+      'current',
+      'url',
+    ]) {
+      expect(encoded.toLowerCase()).not.toContain(forbidden.toLowerCase());
+    }
+  });
+
+  it('keeps the snapshot schema version and the rest of the shape unchanged', () => {
+    const store = new ContextChannelStore();
+    store.registerSource(source('chrome-work', 'WORK_BROWSER'), 1_000);
+
+    const snapshot = buildContextSnapshotV1(store, 1_000);
+    expect(snapshot.schemaVersion).toBe('contextbridge.snapshot.v1');
+    expect(Object.keys(snapshot).sort()).toEqual(['channels', 'readAt', 'schemaVersion', 'sources']);
+  });
+});
