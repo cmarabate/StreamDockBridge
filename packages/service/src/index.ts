@@ -2,6 +2,7 @@
 export * from './contextStore';
 export * from './secretStore';
 export * from './launcher';
+export * from './contextBridge';
 export * from './server';
 
 import { createBridgeServer } from './server';
