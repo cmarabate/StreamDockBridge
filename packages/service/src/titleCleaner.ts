@@ -53,6 +53,64 @@ const PROVIDER_SUFFIXES = [
  */
 const PROVIDER_PREFIXES = ['Prime Video', 'Amazon\\.com'];
 
+/**
+ * Platform identities as they read when a title is nothing but the platform.
+ *
+ * A streaming app that has not yet published work metadata still reports a
+ * title — GSMTC and document.title both hand back a bare "Netflix" while a
+ * player is loading, between episodes, or during an ad. That string is the
+ * service introducing itself, not the thing being watched, so a lookup built on
+ * it searches for the platform instead of the show.
+ *
+ * Matched against the WHOLE cleaned title only. "Netflix" alone is chrome;
+ * "Regular Show | Netflix" is a real title that the suffix rules already handle.
+ * Written out in plain text rather than reusing PROVIDER_SUFFIXES because that
+ * list carries regex escapes for the alternation it feeds.
+ */
+const PLATFORM_IDENTITIES = [
+  'Prime Video',
+  'Amazon.com',
+  'Netflix',
+  'Netflix Official Site',
+  'Hulu',
+  'Disney+',
+  'HBO Max',
+  'Max',
+  'Apple TV',
+  'Apple TV+',
+  'Paramount+',
+  'Peacock',
+  'Crunchyroll',
+  'Tubi',
+  'Tubi Free TV',
+  'Plex',
+  'Fawesome',
+  'Fawesome TV',
+  'YouTube',
+  'Wikipedia',
+  'IMDb',
+  'JustWatch',
+];
+
+/** Compare on letters and digits alone, so "Disney+" and "disney +" agree. */
+function identityKey(value: string): string {
+  return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+const PLATFORM_IDENTITY_KEYS = new Set(PLATFORM_IDENTITIES.map(identityKey));
+
+/**
+ * True when a title says only which service is playing, never what is playing.
+ *
+ * Callers treat this as "no title proven" and fail closed. Deliberately
+ * accepting that a work genuinely named "Max" or "Plex" is refused: searching
+ * for the wrong thing is a worse failure than declining to search, and the
+ * platform reading is overwhelmingly the more common one.
+ */
+export function isPlatformOnlyTitle(title: string): boolean {
+  return PLATFORM_IDENTITY_KEYS.has(identityKey(title));
+}
+
 const SEPARATOR = '[\\s]*[|\\u2013\\u2014\\-\\u00b7]+[\\s]*';
 
 // Longest first, so "Netflix Official Site" is preferred over "Netflix".
@@ -236,13 +294,19 @@ export function deriveCanonicalTitle(meta: MetadataPayload): string {
   // work-level, so qualifier stripping is not applied to it.
   if (meta.jsonLdSeriesTitle && meta.jsonLdSeriesTitle.trim()) {
     const cleaned = cleanTitleText(meta.jsonLdSeriesTitle, { stripQualifiers: false });
-    if (cleaned) return cleaned;
+    if (cleaned && !isPlatformOnlyTitle(cleaned)) return cleaned;
   }
 
   for (const candidate of [meta.jsonLdTitle, meta.ogTitle, meta.twitterTitle, meta.documentTitle, meta.rawTitle]) {
     if (candidate && candidate.trim()) {
       const cleaned = cleanTitleText(candidate);
-      if (cleaned) return cleaned;
+      /**
+       * A candidate that reduces to the platform name proves nothing about the
+       * work, so it is skipped rather than returned — a later candidate may
+       * still carry the real title. When none do, the empty string makes every
+       * caller fail closed instead of searching for the service.
+       */
+      if (cleaned && !isPlatformOnlyTitle(cleaned)) return cleaned;
     }
   }
 

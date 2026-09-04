@@ -1,4 +1,9 @@
-﻿import { deriveCanonicalTitle, cleanTitleText, MAX_TITLE_LENGTH } from './titleCleaner';
+﻿import {
+  deriveCanonicalTitle,
+  cleanTitleText,
+  isPlatformOnlyTitle,
+  MAX_TITLE_LENGTH,
+} from './titleCleaner';
 
 describe('titleCleaner', () => {
   it('prioritizes jsonLdTitle over ogTitle, twitterTitle, documentTitle, and rawTitle', () => {
@@ -364,5 +369,51 @@ describe('adversarial review regressions', () => {
       expect(Date.now() - started).toBeLessThan(250);
     }
     expect(MAX_TITLE_LENGTH).toBeLessThanOrEqual(400);
+  });
+
+  describe('a title that is only the platform name', () => {
+    // Observed live: Brave's media tab sat on a Netflix watch URL reporting
+    // document.title "Netflix", and GSMTC reports the same bare string while a
+    // player loads. That resolved to canonicalTitle "Netflix", so the Stream
+    // Deck media-search button searched for the service instead of the show.
+    it('is refused rather than returned as the work title', () => {
+      for (const platform of ['Netflix', 'Hulu', 'Disney+', 'Prime Video', 'YouTube', 'Max']) {
+        expect(deriveCanonicalTitle({ documentTitle: platform, rawTitle: platform })).toBe('');
+      }
+    });
+
+    it('is refused however it is punctuated or cased', () => {
+      expect(isPlatformOnlyTitle('netflix')).toBe(true);
+      expect(isPlatformOnlyTitle('NETFLIX')).toBe(true);
+      expect(isPlatformOnlyTitle('Disney +')).toBe(true);
+      expect(isPlatformOnlyTitle('Apple TV+')).toBe(true);
+      expect(isPlatformOnlyTitle('Netflix Official Site')).toBe(true);
+    });
+
+    it('does not refuse a real work whose title merely contains a platform name', () => {
+      expect(isPlatformOnlyTitle('The Netflix Story')).toBe(false);
+      expect(isPlatformOnlyTitle('Regular Show')).toBe(false);
+      expect(deriveCanonicalTitle({ documentTitle: 'Regular Show: The Lost Tapes | Disney+' })).toBe(
+        'Regular Show: The Lost Tapes'
+      );
+      expect(deriveCanonicalTitle({ documentTitle: 'Brickleberry | Netflix' })).toBe('Brickleberry');
+    });
+
+    it('falls through to a candidate that does name the work', () => {
+      // Netflix's og:title is the bare service name on some watch pages while
+      // document.title already carries the episode.
+      expect(
+        deriveCanonicalTitle({
+          ogTitle: 'Netflix',
+          documentTitle: 'Regular Show: The Lost Tapes',
+        })
+      ).toBe('Regular Show: The Lost Tapes');
+    });
+
+    it('refuses a structural series title that is only the platform name', () => {
+      expect(deriveCanonicalTitle({ jsonLdSeriesTitle: 'Netflix', documentTitle: 'Netflix' })).toBe(
+        ''
+      );
+    });
   });
 });
