@@ -64,3 +64,10 @@ if ($running) {
 Start-Process -FilePath "wscript.exe" -ArgumentList "`"$targetVbs`"" -WindowStyle Hidden
 Write-Host "StreamDockBridge background service launched from installed startup launcher."
 Write-Host "Service log: $logPath"
+
+# An install is not done when the launcher has been started; it is done when the service
+# it started is answering. The verifier waits for that and fails the install loudly if
+# it never happens, instead of leaving a silent log to be discovered later.
+Write-Host ""
+& (Join-Path $PSScriptRoot 'verify-service-startup.ps1') -Launch
+exit $LASTEXITCODE
