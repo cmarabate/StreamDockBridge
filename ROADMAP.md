@@ -1000,6 +1000,23 @@ voice-driven media pause/resume. Equivalent behavior is VoiceMediaBridge's to ow
   truncated per logon. A hidden launcher has nowhere else to report a startup failure.
 - This remains the existing single logon entry for the existing service. No supervisor,
   scheduled task, Windows service, or process manager is introduced.
+- `verify-service-startup.ps1` (`yarn verify:startup`) proves the registration rather than
+  assuming it: exactly one launcher and no superseded `.cmd`, no BOM, window style 0, the
+  launcher's `node.exe` and `dist\index.js` paths exist and belong to this checkout, exactly
+  one service process, no visible console, port 17337 owned by that process, and `/health`
+  answering. `-Launch` starts a down service through the installed `.vbs` via `wscript.exe`
+  (what Explorer does at logon) and waits for health; `-Restart` stops the running service
+  first. `install-service-startup.ps1` ends by running it, so an install whose service never
+  answers fails instead of printing success.
+- Boot evidence, 2026-09-04: Windows booted 16:01:59, Explorer started 16:03:05, Explorer's
+  Run-key queue finished 16:09:41, and the `.vbs` launched the service hidden at 16:10:30
+  with no manual action. Startup-folder items run after the Run-key queue, so a several-minute
+  delay on a heavily loaded logon is expected, not a failure.
+- StreamDockBridge is **not** on the ChatGPT Dictate → media-pause path. That path is
+  VoiceMediaBridge's browser extension → Chrome-spawned native host → on-demand audio-focus
+  arbiter → GSMTC, and needs no logon entry at all. This service only *reads* VoiceMediaBridge
+  (`--media-context-json`) for Stream Deck titles; a down service costs Stream Deck feedback,
+  never dictation pausing.
 
 ### WatchDirector Cross-Repo Integration Mission (Specification) — `PLANNED` (Architectural Boundary Preserved)
 

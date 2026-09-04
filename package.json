@@ -10,6 +10,7 @@
     "verify:build": "yarn build",
     "verify:ts": "yarn typecheck",
     "verify:lint": "yarn lint",
+    "verify:startup": "powershell -NoProfile -ExecutionPolicy Bypass -File ./verify-service-startup.ps1",
     "build": "yarn workspaces run build",
     "typecheck": "tsc -b --noEmit",
     "lint": "eslint \"packages/*/src/**/*.ts\""
