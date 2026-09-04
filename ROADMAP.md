@@ -985,7 +985,21 @@ voice-driven media pause/resume. Equivalent behavior is VoiceMediaBridge's to ow
 
 ### Service startup & daemon persistence — `VERIFIED RUNTIME`
 
-- Windows user startup entry (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\StreamDockBridgeService.cmd`) executes `"C:\nvm4w\nodejs\node.exe" "D:\_Dev\Apps\StreamDockBridge\packages\service\dist\index.js"` on login, ensuring persistent service availability.
+- Windows user startup entry (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\StreamDockBridgeService.vbs`) executes `"C:\nvm4w\nodejs\node.exe" "D:\_Dev\Apps\StreamDockBridge\packages\service\dist\index.js"` on login, ensuring persistent service availability.
+- The launcher is a `.vbs` using `WScript.Shell.Run` with window style `0`, so the service
+  starts with **no console window**. Explorer runs Startup items with a normal window
+  style, so the previous `.cmd` entry put a console on the owner's desktop for the life of
+  the service, and closing that window took the service down with it.
+- `install-service-startup.ps1` owns this entry. It writes the launcher **without a BOM**
+  (`Set-Content -Encoding utf8` on Windows PowerShell 5.1 emits one, which the interpreter
+  reading the first line rejects), removes any superseded `StreamDockBridgeService.cmd` so
+  exactly one logon entry exists, and stops an already-running service before launching so
+  no second process races for port 17337. `uninstall-service-startup.ps1` removes both
+  names.
+- Service stdout/stderr is redirected to `%APPDATA%\StreamDockBridge\service.log`,
+  truncated per logon. A hidden launcher has nowhere else to report a startup failure.
+- This remains the existing single logon entry for the existing service. No supervisor,
+  scheduled task, Windows service, or process manager is introduced.
 
 ### WatchDirector Cross-Repo Integration Mission (Specification) — `PLANNED` (Architectural Boundary Preserved)
 
