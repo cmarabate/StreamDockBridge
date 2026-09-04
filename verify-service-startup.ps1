@@ -19,7 +19,10 @@ param(
     [switch]$Launch,
     [switch]$Restart,
     [int]$Port = 17337,
-    [int]$StartupTimeoutSeconds = 20
+    [int]$StartupTimeoutSeconds = 20,
+    # The checkout whose dist\index.js the launcher must target. Defaults to the one this
+    # script lives in; pass it to verify a checkout from elsewhere.
+    [string]$RepoRoot = $PSScriptRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -27,7 +30,7 @@ $ErrorActionPreference = 'Stop'
 $startupDir = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\Start Menu\Programs\Startup')
 $launcherPath = Join-Path $startupDir 'StreamDockBridgeService.vbs'
 $legacyCmdPath = Join-Path $startupDir 'StreamDockBridgeService.cmd'
-$expectedDist = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'packages\service\dist\index.js'))
+$expectedDist = [System.IO.Path]::GetFullPath((Join-Path $RepoRoot 'packages\service\dist\index.js'))
 $logPath = Join-Path $env:APPDATA 'StreamDockBridge\service.log'
 $healthUrl = "http://127.0.0.1:$Port/health"
 
