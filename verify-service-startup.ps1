@@ -22,10 +22,16 @@ param(
     [int]$StartupTimeoutSeconds = 20,
     # The checkout whose dist\index.js the launcher must target. Defaults to the one this
     # script lives in; pass it to verify a checkout from elsewhere.
-    [string]$RepoRoot = $PSScriptRoot
+    [string]$RepoRoot
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Resolved here rather than as the parameter default: under Windows PowerShell 5.1 with
+# -File, $PSScriptRoot is still empty while parameter defaults are evaluated.
+if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
+    $RepoRoot = $PSScriptRoot
+}
 
 $startupDir = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\Start Menu\Programs\Startup')
 $launcherPath = Join-Path $startupDir 'StreamDockBridgeService.vbs'
